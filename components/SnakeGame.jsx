@@ -21,6 +21,7 @@ const DIFFICULTIES = [
   { id: 'nightmare', label: 'Insano', size: 24, speed: 60, score: 40, note: 'Para reflexos curtos e precisos.' },
 ];
 
+
 const THEMES = [
   {
     id: 'neon',
@@ -60,6 +61,7 @@ const THEMES = [
   },
 ];
 
+const [autoPlay, setAutoPlay] = useState(false);
 const INITIAL_DIRECTION = { x: 1, y: 0 };
 const DEBUG_SNAKE = process.env.NODE_ENV !== 'production';
 
