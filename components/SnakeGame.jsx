@@ -61,7 +61,6 @@ const THEMES = [
   },
 ];
 
-const [autoPlay, setAutoPlay] = useState(false);
 const INITIAL_DIRECTION = { x: 1, y: 0 };
 const DEBUG_SNAKE = process.env.NODE_ENV !== 'production';
 
@@ -201,6 +200,7 @@ function FoodSvg({ fill }) {
 }
 
 export default function SnakeGame() {
+  const [autoPlay, setAutoPlay] = useState(false);
   const [difficultyId, setDifficultyId] = useState('normal');
   const [themeId, setThemeId] = useState('neon');
   // Snake, obstacles e powerups são mantidos em refs para performance
