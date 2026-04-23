@@ -95,6 +95,62 @@ function isCornerCell(boardSize, position) {
   );
 }
 
+function calculateAutoPlayDirection(head, food, snake, obstacles, boardSize, lastMove) {
+  const possibleMoves = [
+    DIRECTIONS.ArrowUp,
+    DIRECTIONS.ArrowDown,
+    DIRECTIONS.ArrowLeft,
+    DIRECTIONS.ArrowRight,
+  ];
+
+  let bestMove = null;
+  let minDistance = Infinity;
+
+  for (const move of possibleMoves) {
+    // 1. Ignorar o movimento oposto (não pode dar ré)
+    if (oppositeDirection(lastMove, move)) continue;
+
+    const nextX = head.x + move.x;
+    const nextY = head.y + move.y;
+    const nextPos = { x: nextX, y: nextY };
+
+    // 2. Simular colisões fatais (paredes, obstáculos e próprio corpo)
+    if (nextX < 0 || nextX >= boardSize || nextY < 0 || nextY >= boardSize) continue;
+    if (obstacles.some((obs) => isSameCell(obs, nextPos))) continue;
+    if (snake.some((segment) => isSameCell(segment, nextPos))) continue;
+
+    // 3. Calcular a distância Manhattan até a comida
+    const dist = Math.abs(nextX - food.x) + Math.abs(nextY - food.y);
+
+    // 4. Salvar o movimento que deixa a cobra mais próxima da comida
+    if (dist < minDistance) {
+      minDistance = dist;
+      bestMove = move;
+    }
+  }
+
+  // Se a comida estiver bloqueada, pega qualquer movimento seguro para sobreviver
+  if (!bestMove) {
+    for (const move of possibleMoves) {
+      if (oppositeDirection(lastMove, move)) continue;
+      const nextX = head.x + move.x;
+      const nextY = head.y + move.y;
+      const nextPos = { x: nextX, y: nextY };
+
+      if (
+        nextX >= 0 && nextX < boardSize && nextY >= 0 && nextY < boardSize &&
+        !obstacles.some((obs) => isSameCell(obs, nextPos)) &&
+        !snake.some((segment) => isSameCell(segment, nextPos))
+      ) {
+        bestMove = move;
+        break;
+      }
+    }
+  }
+
+  return bestMove;
+}
+
 function createFood(boardSize, snake) {
   let position = { x: getRandomInt(boardSize), y: getRandomInt(boardSize) };
   let attempts = 0;
@@ -201,6 +257,7 @@ function FoodSvg({ fill }) {
 
 export default function SnakeGame() {
   const [autoPlay, setAutoPlay] = useState(false);
+  const autoPlayRef = useRef(false); // Adicione isso
   const [difficultyId, setDifficultyId] = useState('normal');
   const [themeId, setThemeId] = useState('neon');
   // Snake, obstacles e powerups são mantidos em refs para performance
@@ -249,6 +306,10 @@ export default function SnakeGame() {
     segmentIdRef.current += 1;
     return segmentIdRef.current;
   }
+  
+  useEffect(() => {
+    autoPlayRef.current = autoPlay;
+  }, [autoPlay]);
 
   useEffect(() => {
     const savedBest = Number(window.localStorage.getItem('snake-best-score') ?? 0);
@@ -380,6 +441,26 @@ export default function SnakeGame() {
     if (currentSnake.length === 0) return;
 
     let nextDirection = queuedDirectionRef.current ?? directionRef.current;
+
+    // --- INÍCIO DA INTERCEPTAÇÃO DO AUTOPLAY ---
+    if (autoPlayRef.current) {
+      const autoDir = calculateAutoPlayDirection(
+        currentSnake[0],
+        foodRef.current,
+        currentSnake,
+        obstaclesRef.current,
+        boardSize,
+        lastMoveRef.current
+      );
+      
+      // Se a IA encontrou um caminho válido, sobrescreve o input manual
+      if (autoDir) {
+        nextDirection = autoDir;
+        setQueuedDirection(null);
+        queuedDirectionRef.current = null;
+      }
+    }
+    // --- FIM DA INTERCEPTAÇÃO ---
     if (oppositeDirection(lastMoveRef.current, nextDirection)) {
       debugSnake('invalid-opposite-direction-dropped', {
         queuedDirection: queuedDirectionRef.current,
