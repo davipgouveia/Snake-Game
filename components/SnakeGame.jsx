@@ -27,7 +27,7 @@ const THEMES = [
     label: 'Neon Pulse',
     accent: '#6cf7d6',
     accentStrong: '#28c9ff',
-    board: 'linear-gradient(145deg, rgba(8, 19, 30, 0.98), rgba(14, 28, 50, 0.98))',
+    board: 'linear-gradient(145deg, rgba(8, 19, 30, 1), rgba(14, 28, 50, 1))',
     snakeHead: '#d5fff7',
     snakeBody: '#5ef0cf',
     food: '#ff6b8a',
@@ -39,7 +39,7 @@ const THEMES = [
     label: 'Sunset Bloom',
     accent: '#ffd36c',
     accentStrong: '#ff8f5f',
-    board: 'linear-gradient(145deg, rgba(37, 18, 40, 0.98), rgba(70, 26, 47, 0.98))',
+    board: 'linear-gradient(145deg, rgba(37, 18, 40, 1), rgba(70, 26, 47, 1))',
     snakeHead: '#fff2ce',
     snakeBody: '#ffba6f',
     food: '#ff6f91',
@@ -51,7 +51,7 @@ const THEMES = [
     label: 'Forest Mist',
     accent: '#97f27d',
     accentStrong: '#43d9a3',
-    board: 'linear-gradient(145deg, rgba(10, 32, 26, 0.98), rgba(11, 48, 38, 0.98))',
+    board: 'linear-gradient(145deg, rgba(10, 32, 26, 1), rgba(11, 48, 38, 1))',
     snakeHead: '#e6ffe0',
     snakeBody: '#85f29e',
     food: '#ffd86d',
@@ -62,11 +62,6 @@ const THEMES = [
 
 const INITIAL_DIRECTION = { x: 1, y: 0 };
 const DEBUG_SNAKE = process.env.NODE_ENV !== 'production';
-
-function debugSnake(event, payload) {
-  if (!DEBUG_SNAKE) return;
-  console.log(`[snake-debug] ${event}`, payload);
-}
 
 function getRandomInt(max) {
   return Math.floor(Math.random() * max);
@@ -95,18 +90,20 @@ function oppositeDirection(a, b) {
   return a.x + b.x === 0 && a.y + b.y === 0;
 }
 
-// --- CÉREBRO DA IA (Agora com fator caótico para IA Burra) ---
-function calculateWeightedMove(head, food, snake, obstacles, boardSize, lastMove, weights) {
+// --- CÉREBRO DA IA (Gulosa por Power-ups) ---
+function calculateWeightedMove(head, food, snake, obstacles, powerups, boardSize, lastMove, weights, isIntangible) {
   const possibleMoves = [
     DIRECTIONS.ArrowUp, DIRECTIONS.ArrowDown,
     DIRECTIONS.ArrowLeft, DIRECTIONS.ArrowRight,
   ];
 
   const isSafe = (x, y) => {
-    if (x < 0 || x >= boardSize || y < 0 || y >= boardSize) return false;
-    if (obstacles.some(obs => obs.x === x && obs.y === y)) return false;
-    const body = snake.slice(0, snake.length - 1);
-    if (body.some(segment => segment.x === x && segment.y === y)) return false;
+    if (x < 0 || x >= boardSize || y < 0 || y >= boardSize) return isIntangible;
+    if (!isIntangible) {
+        if (obstacles.some(obs => obs.x === x && obs.y === y)) return false;
+        const body = snake.slice(0, snake.length - 1);
+        if (body.some(segment => segment.x === x && segment.y === y)) return false;
+    }
     return true;
   };
 
@@ -118,7 +115,6 @@ function calculateWeightedMove(head, food, snake, obstacles, boardSize, lastMove
     while (queue.length > 0 && count < limit) {
       const current = queue.shift();
       count++;
-
       for (const move of possibleMoves) {
         const nx = current.x + move.x;
         const ny = current.y + move.y;
@@ -134,13 +130,13 @@ function calculateWeightedMove(head, food, snake, obstacles, boardSize, lastMove
 
   let bestMove = null;
   let highestScore = -Infinity;
+  let currentThought = "A explorar o mapa...";
 
   for (const move of possibleMoves) {
     if (oppositeDirection(lastMove, move)) continue;
 
     const nextX = head.x + move.x;
     const nextY = head.y + move.y;
-
     const safe = isSafe(nextX, nextY);
 
     const isWallCrash = (nextX < 0 || nextX >= boardSize || nextY < 0 || nextY >= boardSize) ? 1 : 0;
@@ -148,23 +144,31 @@ function calculateWeightedMove(head, food, snake, obstacles, boardSize, lastMove
 
     const distToFood = Math.abs(nextX - food.x) + Math.abs(nextY - food.y);
     const freeSpace = safe ? countFreeSpace(nextX, nextY, boardSize * 3) : 0;
+    
+    let nearestPowerupDist = Infinity;
+    for(const p of powerups) {
+        const pDist = Math.abs(nextX - p.x) + Math.abs(nextY - p.y);
+        if (pDist < nearestPowerupDist) nearestPowerupDist = pDist;
+    }
 
-    // Fator caótico: Se os pesos estiverem a zero, a cobra vagueia aleatoriamente
     let score = Math.random() * 0.5;
 
-    // 1. Atração por Comida
+    // Atração por Comida (e Power-ups!)
     score += (100 / (distToFood + 1)) * weights.foodAttraction;
+    
+    if (nearestPowerupDist !== Infinity) {
+        // Multiplicador massivo para Power-ups se eles existirem
+        score += (300 / (nearestPowerupDist + 1)) * weights.foodAttraction; 
+    }
 
-    // 2. Cálculo de Espaço e Auto-preservação
-    if (isSelfCrash) {
+    if (isSelfCrash && !isIntangible) {
       score -= 1000 * weights.spacePriority;
     } else {
       score += freeSpace * weights.spacePriority;
     }
 
-    // 3. Cálculo de Bordas e Paredes
     if (isWallCrash) {
-      score -= 1000 * weights.edgeAvoidance;
+        if (!isIntangible) score -= 1000 * weights.edgeAvoidance;
     } else {
       const huggingWall = (nextX === 0 || nextX === boardSize - 1 || nextY === 0 || nextY === boardSize - 1) ? 1 : 0;
       score -= huggingWall * weights.edgeAvoidance;
@@ -173,20 +177,28 @@ function calculateWeightedMove(head, food, snake, obstacles, boardSize, lastMove
     if (score > highestScore) {
       highestScore = score;
       bestMove = move;
+
+      // Define os Pensamentos da IA baseado no Score Dominante
+      if (nearestPowerupDist < distToFood + 5) currentThought = "⚡ Power-up detetado! Foco alterado.";
+      else if (isIntangible && isWallCrash) currentThought = "👻 Modo Fantasma: A atravessar a parede!";
+      else if (!safe && !isIntangible) currentThought = "PÂNICO: Perigo iminente!";
+      else if (distToFood < 4) currentThought = `Foco: Comida a ${distToFood} passos.`;
     }
   }
 
-  return { move: bestMove };
+  return { move: bestMove, thought: currentThought };
 }
 // --------------------------------------------------------
 
-function createFood(boardSize, snake) {
+function createFood(boardSize, snake, obstacles = [], powerups = []) {
   let position = { x: getRandomInt(boardSize), y: getRandomInt(boardSize) };
   let attempts = 0;
-
   while (
     attempts < boardSize * boardSize * 2 &&
-    (snake.some((segment) => isSameCell(segment, position)) || isCornerCell(boardSize, position))
+    (snake.some((segment) => isSameCell(segment, position)) || 
+     obstacles.some((obs) => isSameCell(obs, position)) ||
+     powerups.some((p) => isSameCell(p, position)) ||
+     isCornerCell(boardSize, position))
   ) {
     position = { x: getRandomInt(boardSize), y: getRandomInt(boardSize) };
     attempts += 1;
@@ -199,9 +211,7 @@ function directionFromKey(code) {
 }
 
 function ArrowIcon({ direction }) {
-  const rotation =
-    direction === 'up' ? 0 : direction === 'right' ? 90 : direction === 'down' ? 180 : 270;
-
+  const rotation = direction === 'up' ? 0 : direction === 'right' ? 90 : direction === 'down' ? 180 : 270;
   return (
     <svg className="icon-arrow" viewBox="0 0 24 24" aria-hidden="true" style={{ transform: `rotate(${rotation}deg)` }}>
       <path d="M12 3l7 9h-4v9H9v-9H5l7-9z" fill="currentColor" />
@@ -210,10 +220,7 @@ function ArrowIcon({ direction }) {
 }
 
 function SnakeSegmentSvg({ isHead, fill, direction, isEating }) {
-  const headRotation =
-    direction.x === 1 && direction.y === 0 ? 90 : direction.x === -1 && direction.y === 0 ? 270
-      : direction.x === 0 && direction.y === 1 ? 180 : 0;
-
+  const headRotation = direction.x === 1 && direction.y === 0 ? 90 : direction.x === -1 && direction.y === 0 ? 270 : direction.x === 0 && direction.y === 1 ? 180 : 0;
   if (!isHead) {
     return (
       <svg className="snake-svg" viewBox="0 0 100 100" aria-hidden="true">
@@ -222,7 +229,6 @@ function SnakeSegmentSvg({ isHead, fill, direction, isEating }) {
       </svg>
     );
   }
-
   return (
     <svg className="snake-svg" viewBox="0 0 100 100" aria-hidden="true">
       <g transform={`rotate(${headRotation} 50 50)`}>
@@ -259,18 +265,13 @@ export default function SnakeGame() {
   const [autoPlay, setAutoPlay] = useState(false);
   const autoPlayRef = useRef(false);
 
-  const defaultDumbWeights = {
-    foodAttraction: 0.1,
-    spacePriority: 0.0,
-    edgeAvoidance: -50.0    // IA Suicida (Procura a parede)
-  };
+  const defaultDumbWeights = { foodAttraction: 0.1, spacePriority: 0.0, edgeAvoidance: -50.0 };
 
   const [generation, setGeneration] = useState(1);
   const [aiWeights, setAiWeights] = useState(defaultDumbWeights);
   const aiWeightsRef = useRef(aiWeights);
   const apiCooldownUntil = useRef(0);
 
-  // --- ESTADOS DO TERMINAL ---
   const [terminalLogs, setTerminalLogs] = useState([]);
   const terminalEndRef = useRef(null);
 
@@ -280,7 +281,6 @@ export default function SnakeGame() {
       return newLogs.slice(-30); 
     });
   };
-  // --------------------------
 
   const [difficultyId, setDifficultyId] = useState('normal');
   const [themeId, setThemeId] = useState('neon');
@@ -289,6 +289,11 @@ export default function SnakeGame() {
   const snakeRef = useRef([]);
   const [obstacles, setObstacles] = useState([]);
   const obstaclesRef = useRef([]);
+  
+  const [powerups, setPowerups] = useState([]);
+  const powerupsRef = useRef([]);
+  const powerupStateRef = useRef(null);
+  const powerupTimerRef = useRef(0);
 
   const [direction, setDirection] = useState(INITIAL_DIRECTION);
   const [queuedDirection, setQueuedDirection] = useState(null);
@@ -303,9 +308,12 @@ export default function SnakeGame() {
   const [eatEffect, setEatEffect] = useState(null);
   const [crashType, setCrashType] = useState('none');
   const [glowPosition, setGlowPosition] = useState({ x: 50, y: 50 });
+  const lastThoughtRef = useRef('');
+  
   const [isFullscreen, setIsFullscreen] = useState(false);
-
   const shellRef = useRef(null);
+  const boardRef = useRef(null); 
+
   const segmentIdRef = useRef(0);
   const directionRef = useRef(INITIAL_DIRECTION);
   const queuedDirectionRef = useRef(null);
@@ -314,15 +322,8 @@ export default function SnakeGame() {
   const growthRef = useRef(0);
   const lifetimeTicksRef = useRef(0);
 
-  const difficulty = useMemo(
-    () => DIFFICULTIES.find((item) => item.id === difficultyId) ?? DIFFICULTIES[1],
-    [difficultyId],
-  );
-
-  const theme = useMemo(
-    () => THEMES.find((item) => item.id === themeId) ?? THEMES[0],
-    [themeId],
-  );
+  const difficulty = useMemo(() => DIFFICULTIES.find((item) => item.id === difficultyId) ?? DIFFICULTIES[1], [difficultyId]);
+  const theme = useMemo(() => THEMES.find((item) => item.id === themeId) ?? THEMES[0], [themeId]);
 
   const boardSize = difficulty.size;
   const segmentTravelDuration = useMemo(() => Math.max(0.06, (difficulty.speed / 1000) * 0.85), [difficulty.speed]);
@@ -332,6 +333,18 @@ export default function SnakeGame() {
     segmentIdRef.current += 1;
     return segmentIdRef.current;
   }
+
+  // --- SINCRONIZAÇÃO GLOBAL DO TEMA (Remove Barras de Rolagem e Força Layout) ---
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      document.documentElement.style.backgroundColor = '#040a12';
+      document.body.style.background = theme.board;
+      document.body.style.color = '#ffffff';
+      document.body.style.margin = "0";
+      document.body.style.minHeight = "100vh";
+      document.body.style.overflowX = "hidden"; // Remove Horizontal Scrollbar!
+    }
+  }, [theme]);
 
   useEffect(() => { autoPlayRef.current = autoPlay; }, [autoPlay]);
   useEffect(() => { aiWeightsRef.current = aiWeights; }, [aiWeights]);
@@ -351,11 +364,12 @@ export default function SnakeGame() {
   useEffect(() => { foodRef.current = food; }, [food]);
   useEffect(() => { snakeRef.current = snake; }, [snake]);
   useEffect(() => { obstaclesRef.current = obstacles; }, [obstacles]);
+  useEffect(() => { powerupsRef.current = powerups; }, [powerups]);
   useEffect(() => { lastMoveRef.current = lastMove; }, [lastMove]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(document.fullscreenElement === shellRef.current);
+      setIsFullscreen(document.fullscreenElement === boardRef.current);
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
@@ -371,26 +385,15 @@ export default function SnakeGame() {
       if (['Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(event.code)) {
         event.preventDefault();
       }
-
-      if (event.code === 'Space') {
-        togglePause();
-        return;
-      }
-
+      if (event.code === 'Space') { togglePause(); return; }
       if (event.code === 'Enter') {
-        if (status === 'gameover' || status === 'victory') {
-          resetGame(boardSize);
-          startGame();
-        } else if (status === 'ready') {
-          startGame();
-        }
+        if (status === 'gameover' || status === 'victory') { resetGame(boardSize); startGame(); } 
+        else if (status === 'ready') startGame();
         return;
       }
-
       const next = directionFromKey(event.code);
       if (next) handleDirection(next);
     };
-
     window.addEventListener('keydown', handleKeyDown, { passive: false });
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [boardSize, status]);
@@ -417,8 +420,7 @@ export default function SnakeGame() {
     // eslint-disable-next-line
   }, [status, boardSize, difficulty.speed, difficulty.score]);
 
-
-  // --- CONSULTOR GEMINI COM "PENSAMENTOS" NO JSON ---
+  // --- CONSULTOR GEMINI ---
   async function askGeminiForEvolution(deathReason, length, ticks) {
     const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
     const reasonPT = deathReason === 'self' ? 'o próprio corpo' : deathReason === 'wall' ? 'a parede' : 'um obstáculo';
@@ -431,7 +433,6 @@ export default function SnakeGame() {
       return;
     }
 
-    // Pedimos explicitamente o campo "thought" no JSON!
     const prompt = `
     Você é um cientista de dados treinando uma Inteligência Artificial para o jogo Snake.
     O agente da Geração ${generation} falhou e a partida terminou.
@@ -462,10 +463,7 @@ export default function SnakeGame() {
     try {
       const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey 
-        },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { responseMimeType: "application/json" }
@@ -473,7 +471,6 @@ export default function SnakeGame() {
       });
 
       const data = await response.json();
-
       if (!response.ok) throw new Error(data.error?.message || `${response.status}`);
       if (data.promptFeedback?.blockReason) throw new Error("Bloqueio de segurança.");
       if (data.candidates?.[0]?.finishReason === 'SAFETY') throw new Error("Bloqueio de segurança na resposta.");
@@ -486,11 +483,7 @@ export default function SnakeGame() {
         throw new Error("JSON mal formatado.");
       }
 
-      // Mostra o pensamento do Gemini no terminal com cor amarela/destaque
-      if (newWeights.thought) {
-        addLog(`💡 Gemini: "${newWeights.thought}"`, "gemini-thought");
-      }
-
+      if (newWeights.thought) addLog(`💡 Gemini: "${newWeights.thought}"`, "gemini-thought");
       addLog(`[Gen ${generation} Evoluiu] C:${newWeights.foodAttraction.toFixed(1)} | E:${newWeights.spacePriority.toFixed(1)} | P:${newWeights.edgeAvoidance.toFixed(1)}`, "success");
 
       setTimeout(() => {
@@ -498,7 +491,7 @@ export default function SnakeGame() {
         setGeneration(g => g + 1);
         resetGame(boardSize);
         startGame();
-      }, 3500); // Mais tempo para o utilizador conseguir ler o pensamento
+      }, 3500); 
 
     } catch (error) {
       const errorMessage = error.message;
@@ -509,7 +502,6 @@ export default function SnakeGame() {
         const waitTimeMs = match ? (parseFloat(match[1]) + 2) * 1000 : 60000;
         apiCooldownUntil.current = Date.now() + waitTimeMs; 
       }
-
       setTimeout(() => triggerLocalMutation(), 2500);
     }
   }
@@ -521,25 +513,74 @@ export default function SnakeGame() {
         spacePriority: Math.max(0, prev.spacePriority + (Math.random() * 2 - 0.5)),
         edgeAvoidance: prev.edgeAvoidance + (Math.random() * 10 - 2) 
       };
-      
       const pensamentosLocais = [
         "Hmm, parece que subestimei aquela parede. Aumentando cautela.",
         "Preciso de mais espaço para manobrar! Vou focar nisso.",
         "Morri muito rápido, vou focar os meus instintos de sobrevivência."
       ];
       addLog(`💡 IA: "${pensamentosLocais[Math.floor(Math.random() * pensamentosLocais.length)]}"`, "gemini-thought");
-
       addLog(`[Gen ${generation} Evoluiu] C:${newWeights.foodAttraction.toFixed(1)} | E:${newWeights.spacePriority.toFixed(1)} | P:${newWeights.edgeAvoidance.toFixed(1)}`, "success");
-      
       return newWeights;
     });
-    
     setGeneration(g => g + 1);
     resetGame(boardSize);
     startGame();
   }
-  // --- FIM askGeminiForEvolution ---
 
+  // --- SPAWNERS Seguros ---
+  function spawnObstacle() {
+    let position = { x: getRandomInt(boardSize), y: getRandomInt(boardSize) };
+    let attempts = 0;
+    while (
+      attempts < 100 &&
+      (snakeRef.current.some(s => isSameCell(s, position)) || 
+       isSameCell(position, foodRef.current) || 
+       obstaclesRef.current.some(o => isSameCell(o, position)) ||
+       powerupsRef.current.some(p => isSameCell(p, position)) ||
+       isCornerCell(boardSize, position))
+    ) {
+      position = { x: getRandomInt(boardSize), y: getRandomInt(boardSize) };
+      attempts++;
+    }
+
+    if (attempts < 100) {
+      obstaclesRef.current.push(position);
+      setObstacles([...obstaclesRef.current]);
+    }
+  }
+
+  function spawnPowerup() {
+    if (powerupsRef.current.length >= 2) return; 
+    const types = ['bonus', 'shrink', 'intangivel'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    
+    let position = { x: getRandomInt(boardSize), y: getRandomInt(boardSize), type, id: Date.now() + Math.random() };
+    let attempts = 0;
+
+    while (
+      attempts < 100 &&
+      (snakeRef.current.some(s => isSameCell(s, position)) || 
+       isSameCell(position, foodRef.current) || 
+       obstaclesRef.current.some(o => isSameCell(o, position)) ||
+       powerupsRef.current.some(p => isSameCell(p, position)) ||
+       isCornerCell(boardSize, position))
+    ) {
+      position = { ...position, x: getRandomInt(boardSize), y: getRandomInt(boardSize) };
+      attempts++;
+    }
+
+    if (attempts < 100) {
+      powerupsRef.current.push(position);
+      setPowerups([...powerupsRef.current]);
+      
+      setTimeout(() => {
+        powerupsRef.current = powerupsRef.current.filter(p => p.id !== position.id);
+        setPowerups([...powerupsRef.current]);
+      }, 12000); 
+    }
+  }
+
+  // --- O LOOP DO JOGO ---
   function runGameTick() {
     if (statusRef.current !== 'running') return;
 
@@ -548,17 +589,23 @@ export default function SnakeGame() {
 
     lifetimeTicksRef.current += 1;
     let nextDirection = queuedDirectionRef.current ?? directionRef.current;
+    
+    const isIntangibleStatus = powerupStateRef.current === 'intangivel' && powerupTimerRef.current > 0;
 
-    // --- IA AGENTE JOGANDO ---
     if (autoPlayRef.current) {
       const aiResult = calculateWeightedMove(
-        currentSnake[0], foodRef.current, currentSnake, obstaclesRef.current, boardSize, lastMoveRef.current, aiWeightsRef.current
+        currentSnake[0], foodRef.current, currentSnake, obstaclesRef.current, powerupsRef.current, boardSize, lastMoveRef.current, aiWeightsRef.current, isIntangibleStatus
       );
-
       if (aiResult.move) {
         nextDirection = aiResult.move;
         setQueuedDirection(null);
         queuedDirectionRef.current = null;
+        
+        // Log "Thought" apenas se for uma mudança brusca (ex: Powerup avistado)
+        if (aiResult.thought !== lastThoughtRef.current && (aiResult.thought.includes('Power-up') || aiResult.thought.includes('Fantasma'))) {
+            addLog(aiResult.thought, "thought");
+            lastThoughtRef.current = aiResult.thought;
+        }
       }
     }
 
@@ -571,15 +618,33 @@ export default function SnakeGame() {
     const head = currentSnake[0];
     const nextHead = { id: getNextSegmentId(), x: head.x + nextDirection.x, y: head.y + nextDirection.y };
 
-    const hitWall = nextHead.x < 0 || nextHead.x >= boardSize || nextHead.y < 0 || nextHead.y >= boardSize;
+    if (powerupTimerRef.current > 0) {
+        powerupTimerRef.current -= 1;
+        if (powerupTimerRef.current === 0) {
+            powerupStateRef.current = null;
+            if(!autoPlayRef.current) addLog("A Intangibilidade acabou!", "system");
+        }
+    }
+
+    let hitWall = nextHead.x < 0 || nextHead.x >= boardSize || nextHead.y < 0 || nextHead.y >= boardSize;
+    
+    if (isIntangibleStatus && hitWall) {
+        if (nextHead.x < 0) nextHead.x = boardSize - 1;
+        else if (nextHead.x >= boardSize) nextHead.x = 0;
+        if (nextHead.y < 0) nextHead.y = boardSize - 1;
+        else if (nextHead.y >= boardSize) nextHead.y = 0;
+        hitWall = false; 
+    }
+
     const hitObstacle = obstaclesRef.current.some((obs) => isSameCell(obs, nextHead));
     const ateFood = isSameCell(nextHead, foodRef.current);
+    const powerupIdx = powerupsRef.current.findIndex((p) => isSameCell(p, nextHead));
 
     const tailWillStay = ateFood || growthRef.current > 0;
     const collisionSegments = tailWillStay ? currentSnake : currentSnake.slice(0, -1);
     const hitSelf = collisionSegments.some((segment) => isSameCell(segment, nextHead));
 
-    if (hitWall || hitObstacle || hitSelf) {
+    if (hitWall || (hitObstacle && !isIntangibleStatus) || (hitSelf && !isIntangibleStatus)) {
       const reason = hitSelf ? 'self' : (hitObstacle ? 'obstacle' : 'wall');
       setCrashType(reason);
 
@@ -603,6 +668,26 @@ export default function SnakeGame() {
     lastMoveRef.current = nextDirection;
     setGlowPosition({ x: ((nextHead.x + 0.5) / boardSize) * 100, y: ((nextHead.y + 0.5) / boardSize) * 100 });
 
+    if (powerupIdx !== -1) {
+        const p = powerupsRef.current[powerupIdx];
+        if (p.type === 'bonus') {
+            setScore(s => s + 50);
+            if(!autoPlayRef.current) addLog("Bónus! +50 pontos", "success");
+        } else if (p.type === 'shrink') {
+            const amountToRemove = Math.floor(nextSnake.length / 2);
+            for(let i=0; i < amountToRemove; i++) {
+                if (nextSnake.length > 2) nextSnake.pop();
+            }
+            if(!autoPlayRef.current) addLog("Encolheu pela metade!", "success");
+        } else if (p.type === 'intangivel') {
+            powerupStateRef.current = 'intangivel';
+            powerupTimerRef.current = 50; 
+            if(!autoPlayRef.current) addLog("Intangível! Atravesse tudo.", "success");
+        }
+        powerupsRef.current.splice(powerupIdx, 1);
+        setPowerups([...powerupsRef.current]);
+    }
+
     if (ateFood) {
       growthRef.current += 1;
       const points = difficulty.score;
@@ -617,10 +702,16 @@ export default function SnakeGame() {
         return;
       }
 
-      const nextFood = createFood(boardSize, nextSnake);
+      const nextFood = createFood(boardSize, nextSnake, obstaclesRef.current, powerupsRef.current);
       foodRef.current = nextFood;
       setFood(nextFood);
-      setFoodSpawnId((id) => id + 1);
+      
+      const newSpawnId = foodSpawnId + 1;
+      setFoodSpawnId(newSpawnId);
+      
+      if (newSpawnId % 4 === 0) spawnObstacle();
+      if (newSpawnId % 5 === 0) spawnPowerup();
+
       setEatUntilMs(Date.now() + Math.max(260, difficulty.speed * 2.1));
       setEatEffect({ x: nextHead.x, y: nextHead.y, id: Date.now() });
     }
@@ -636,7 +727,14 @@ export default function SnakeGame() {
     const startingSnake = startingSnakeCells.map((segment) => ({
       id: getNextSegmentId(), x: segment.x, y: segment.y,
     }));
-    const startingFood = createFood(nextBoardSize, startingSnake);
+    
+    // Geração Inicial com 3 obstáculos imediatos para o mapa nascer desafiante
+    obstaclesRef.current = [];
+    setObstacles([]);
+    const startingFood = createFood(nextBoardSize, startingSnake, [], []);
+    foodRef.current = startingFood;
+    
+    for(let i=0; i<3; i++) spawnObstacle();
 
     setSnake(startingSnake);
     snakeRef.current = [...startingSnake];
@@ -645,7 +743,7 @@ export default function SnakeGame() {
     setQueuedDirection(null);
     queuedDirectionRef.current = null;
     setFood(startingFood);
-    foodRef.current = startingFood;
+    
     setCrashType('none');
     setStatus('ready');
     setScore(0);
@@ -657,6 +755,12 @@ export default function SnakeGame() {
     setEatUntilMs(0);
     setEatEffect(null);
     setGlowPosition({ x: ((startingSnake[0].x + 0.5) / nextBoardSize) * 100, y: ((startingSnake[0].y + 0.5) / nextBoardSize) * 100 });
+    
+    powerupsRef.current = [];
+    setPowerups([]);
+    powerupStateRef.current = null;
+    powerupTimerRef.current = 0;
+    lastThoughtRef.current = '';
   }
 
   function startGame() {
@@ -693,26 +797,29 @@ export default function SnakeGame() {
   }
 
   async function toggleFullscreen() {
-    if (!shellRef.current) return;
+    if (!boardRef.current) return;
     if (document.fullscreenElement) {
       await document.exitFullscreen();
-      return;
+    } else {
+      await boardRef.current.requestFullscreen();
     }
-    await shellRef.current.requestFullscreen();
   }
 
   const boardStyle = {
     '--accent': theme.accent, '--accent-strong': theme.accentStrong,
     '--board-bg': theme.board, '--grid-size': `${100 / boardSize}%`,
     '--glow-x': `${glowPosition.x}%`, '--glow-y': `${glowPosition.y}%`,
+    width: '100%' // Removemos os 100vw que causavam o scroll horizontal
   };
+
+  const isIntangibleRender = powerupStateRef.current === 'intangivel' && powerupTimerRef.current > 0;
 
   return (
     <main className="app-shell" style={boardStyle} ref={shellRef} data-fullscreen={isFullscreen ? 'true' : 'false'}>
       <div className="noise" />
 
-      <section className="hero">
-        <div className="hero-copy">
+      <motion.section layout className="hero">
+        <motion.div layout className="hero-copy">
           <div>
             <span className="eyebrow">Snake AI Lab</span>
             <h1>Laboratório de Evolução com Gemini.</h1>
@@ -720,12 +827,12 @@ export default function SnakeGame() {
           <div className="hero-meta">
             <p>Ative o modo Treino IA. A cobra tentará jogar. Se morrer, o Google Gemini vai analisar o erro e reprogramar a genética (pesos) da IA para a próxima geração!</p>
           </div>
-        </div>
+        </motion.div>
 
-        <div className="game-shell">
-          <div className="panel board-panel">
+        <motion.div layout className="game-shell">
+          <motion.div layout className="panel board-panel">
 
-            <div className="hud-row" style={{ alignItems: 'center' }}>
+            <motion.div layout className="hud-row" style={{ alignItems: 'center' }}>
               <div className="hud-card" style={{ minWidth: 90 }}>
                 <span>{autoPlay ? 'Geração' : 'Pontuação'}</span>
                 <strong>{autoPlay ? `#${generation}` : score}</strong>
@@ -775,11 +882,12 @@ export default function SnakeGame() {
                   </button>
                 )}
               </div>
-            </div>
+            </motion.div>
 
             <AnimatePresence>
               {autoPlay && (
                 <motion.div
+                  layout
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
@@ -793,9 +901,12 @@ export default function SnakeGame() {
             </AnimatePresence>
 
             <motion.div
+              layout
               className="board-frame"
+              ref={boardRef} 
               animate={status === 'gameover' && crashType === 'self' ? { x: [0, -9, 9, -7, 7, -4, 4, 0], rotate: [0, -0.8, 0.8, -0.4, 0.4, 0] } : { x: 0, rotate: 0 }}
               transition={{ duration: 0.6, ease: 'easeInOut' }}
+              style={{ background: isFullscreen ? theme.board : 'transparent' }} 
             >
               <div className="board-grid" />
               <motion.div className="board-glow" animate={{ opacity: status === 'running' ? 0.8 : 0.55 }} transition={{ duration: 0.9 }} />
@@ -809,7 +920,8 @@ export default function SnakeGame() {
                       className="snake-segment"
                       initial={false}
                       animate={{
-                        opacity: 1, scale: index === 0 ? (isEating ? 1.2 : 1.08) : 1,
+                        opacity: isIntangibleRender ? 0.4 : 1, 
+                        scale: index === 0 ? (isEating ? 1.2 : 1.08) : 1,
                         left: `${segment.x * size}%`, top: `${segment.y * size}%`,
                       }}
                       transition={{ type: 'tween', duration: segmentTravelDuration, ease: 'linear' }}
@@ -817,6 +929,51 @@ export default function SnakeGame() {
                     >
                       <SnakeSegmentSvg isHead={index === 0} fill={index === 0 ? theme.snakeHead : theme.snakeBody} direction={lastMove} isEating={index === 0 && isEating} />
                     </motion.div>
+                  );
+                })}
+                
+                {/* OBSTÁCULOS MAIS VISÍVEIS E METÁLICOS */}
+                {obstacles.map((obs) => {
+                  const size = 100 / boardSize;
+                  return (
+                    <motion.div
+                      key={`obs-${obs.x}-${obs.y}`}
+                      className="obstacle-piece"
+                      initial={{ scale: 0, opacity: 0 }}
+                      animate={{ left: `${obs.x * size}%`, top: `${obs.y * size}%`, opacity: 1, scale: 1 }}
+                      transition={{ type: 'spring' }}
+                      style={{
+                        position: 'absolute', width: `${size}%`, height: `${size}%`, 
+                        background: 'linear-gradient(135deg, #d32f2f 0%, #4a0000 100%)', 
+                        borderRadius: '25%', border: '2px solid #ffcccc', zIndex: 1, boxShadow: '0 0 15px rgba(255,0,0,0.6)',
+                      }}
+                    />
+                  );
+                })}
+
+                {powerups.map((p) => {
+                  const size = 100 / boardSize;
+                  let color = '#f7e06c';
+                  if (p.type === 'shrink') color = '#6cf7d6';
+                  if (p.type === 'intangivel') color = '#ff6b8a';
+                  return (
+                    <div
+                      key={p.id}
+                      className="powerup-piece"
+                      style={{ position: 'absolute', width: `${size}%`, height: `${size}%`, left: `${p.x * size}%`, top: `${p.y * size}%`, zIndex: 3 }}
+                    >
+                      <motion.div 
+                        style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        animate={{ scale: [1, 1.25, 1], rotate: [0, 15, -15, 0] }}
+                        transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                      >
+                        <svg width="80%" height="80%" viewBox="0 0 100 100">
+                          {p.type === 'bonus' && <circle cx="50" cy="50" r="36" fill={color} stroke="#fff" strokeWidth="6" />}
+                          {p.type === 'shrink' && <rect x="18" y="18" width="64" height="64" rx="18" fill={color} stroke="#fff" strokeWidth="6" />}
+                          {p.type === 'intangivel' && <polygon points="50,10 90,90 10,90" fill={color} stroke="#fff" strokeWidth="6" />}
+                        </svg>
+                      </motion.div>
+                    </div>
                   );
                 })}
 
@@ -832,7 +989,6 @@ export default function SnakeGame() {
                 </motion.div>
               </div>
 
-              {/* OVERLAYS CORRIGIDOS COM Z-INDEX 999 */}
               <AnimatePresence>
                 {status === 'analyzing' && (
                   <motion.div
@@ -879,13 +1035,12 @@ export default function SnakeGame() {
                 )}
               </AnimatePresence>
             </motion.div>
-          </div>
+          </motion.div>
 
-          <aside className="panel sidebar">
+          <motion.aside layout className="panel sidebar">
 
-            {/* TERMINAL ADICIONADO AO TOPO DA SIDEBAR QUANDO AUTOPLAY ESTÁ ON */}
             {autoPlay && (
-              <section className="sidebar-section">
+              <motion.section layout className="sidebar-section">
                 <h2>Terminal IA</h2>
                 <div style={{
                   background: 'rgba(0,0,0,0.6)',
@@ -905,7 +1060,8 @@ export default function SnakeGame() {
                     let color = '#fff';
                     if (log.type === 'error') color = '#ff6b8a';
                     if (log.type === 'success') color = '#6cf7d6';
-                    if (log.type === 'gemini-thought') color = '#f7e06c'; // Nova cor amarela/dourada para os pensamentos!
+                    if (log.type === 'gemini-thought') color = '#f7e06c'; 
+                    if (log.type === 'thought') color = '#a1a1aa'; 
 
                     return (
                       <div key={log.id} style={{ color }}>
@@ -915,17 +1071,17 @@ export default function SnakeGame() {
                   })}
                   <div ref={terminalEndRef} />
                 </div>
-              </section>
+              </motion.section>
             )}
 
-            <section className="sidebar-section">
+            <motion.section layout className="sidebar-section">
               <h2>Controles</h2>
               <div className="control-row">
                 <button className="action-button" type="button" onClick={startGame}>
                   Start
                 </button>
                 <button className="chip-button" type="button" onClick={toggleFullscreen}>
-                  {isFullscreen ? 'Sair' : 'Tela cheia'}
+                  {isFullscreen ? 'Sair Fullscreen' : 'Tela cheia'}
                 </button>
                 <button className="chip-button" type="button" onClick={togglePause}>
                   Pausar
@@ -937,9 +1093,30 @@ export default function SnakeGame() {
               <p className="helper-text" style={{ marginTop: 14 }}>
                 Use setas, WASD ou os botões de toque para mover a cobrinha. Enter inicia ou reinicia depois de uma derrota.
               </p>
-            </section>
+            </motion.section>
+            
+            {/* Controlos Touch Instantâneos com onPointerDown */}
+            <motion.section layout className="sidebar-section mobile-only-controls">
+              <h2>Toque Rápido</h2>
+              <div className="touch-controls" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
+                <button className="icon-button" type="button" onPointerDown={(e) => { e.preventDefault(); handleDirection(DIRECTIONS.ArrowUp); }}>
+                  <ArrowIcon direction="up" />
+                </button>
+                <div className="touch-row" style={{ display: 'flex', gap: '8px' }}>
+                  <button className="icon-button" type="button" onPointerDown={(e) => { e.preventDefault(); handleDirection(DIRECTIONS.ArrowLeft); }}>
+                    <ArrowIcon direction="left" />
+                  </button>
+                  <button className="icon-button" type="button" onPointerDown={(e) => { e.preventDefault(); handleDirection(DIRECTIONS.ArrowDown); }}>
+                    <ArrowIcon direction="down" />
+                  </button>
+                  <button className="icon-button" type="button" onPointerDown={(e) => { e.preventDefault(); handleDirection(DIRECTIONS.ArrowRight); }}>
+                    <ArrowIcon direction="right" />
+                  </button>
+                </div>
+              </div>
+            </motion.section>
 
-            <section className="sidebar-section">
+            <motion.section layout className="sidebar-section">
               <h2>Dificuldade</h2>
               <div className="difficulty-grid">
                 {DIFFICULTIES.map((item) => (
@@ -960,9 +1137,9 @@ export default function SnakeGame() {
                   </button>
                 ))}
               </div>
-            </section>
+            </motion.section>
 
-            <section className="sidebar-section">
+            <motion.section layout className="sidebar-section">
               <h2>Estilo</h2>
               <div className="theme-grid">
                 {THEMES.map((item) => (
@@ -983,10 +1160,10 @@ export default function SnakeGame() {
                   </button>
                 ))}
               </div>
-            </section>
-          </aside>
-        </div>
-      </section>
+            </motion.section>
+          </motion.aside>
+        </motion.div>
+      </motion.section>
     </main>
   );
 }
