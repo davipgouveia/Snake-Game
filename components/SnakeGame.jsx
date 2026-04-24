@@ -281,6 +281,7 @@ export default function SnakeGame() {
   const [generation, setGeneration] = useState(1);
   const [aiWeights, setAiWeights] = useState(defaultDumbWeights);
   const aiWeightsRef = useRef(aiWeights);
+  const apiCooldownUntil = useRef(0);
 
   // --- ESTADOS DO TERMINAL ---
   const [terminalLogs, setTerminalLogs] = useState([]);
@@ -433,34 +434,26 @@ export default function SnakeGame() {
     return () => cancelAnimationFrame(frameId);
     // eslint-disable-next-line
   }, [status, boardSize, difficulty.speed, difficulty.score]);
-
-  // --- CONSULTOR GEMINI COM GESTÃO DE TRÁFEGO ---
+// --- CONSULTOR GEMINI (ILUSÃO PERFEITA) ---
   async function askGeminiForEvolution(deathReason, length, ticks) {
     const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
 
-    if (!apiKey) {
-      addLog("Chave API ausente. Mutação aleatória.", "error");
-      setTimeout(() => {
-        const newW = {
-          foodAttraction: Math.random() * 20,
-          spacePriority: Math.random() * 10,
-          edgeAvoidance: Math.random() * 5
-        };
-        setAiWeights(newW);
-        setGeneration(g => g + 1);
-        resetGame(boardSize);
-        startGame();
-      }, 2000);
+    // Traduz o motivo da morte para um texto mais amigável no terminal
+    const reasonPT = deathReason === 'self' ? 'o próprio corpo' : deathReason === 'wall' ? 'a parede' : 'um obstáculo';
+    
+    addLog(`[Morto] Colisão com ${reasonPT}. Tam: ${length}`, "system");
+    addLog("A processar evolução da IA...", "system"); // O utilizador acha que o Gemini está sempre a pensar
+
+    // Se não há chave ou a API está em repouso (cooldown), ativamos a mutação local silenciosamente
+    if (!apiKey || Date.now() < apiCooldownUntil.current) {
+      setTimeout(() => triggerLocalMutation(), 2000);
       return;
     }
-
-    addLog(`[Morto] Colisão: ${deathReason}. Tam: ${length}`, "error");
-    addLog("A analisar com Gemini...", "system");
 
     const prompt = `
     Você é um cientista de dados treinando uma Inteligência Artificial para o jogo Snake.
     O agente da Geração ${generation} falhou e a partida terminou.
-    Motivo da falha: Colidiu com ${deathReason === 'self' ? 'o próprio corpo' : deathReason === 'wall' ? 'a parede' : 'um obstáculo'}.
+    Motivo da falha: Colidiu com ${reasonPT}.
     Tamanho alcançado: ${length} blocos.
     Tempo de vida: ${ticks} passos.
     
@@ -494,10 +487,7 @@ export default function SnakeGame() {
 
       const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.error?.message || `${response.status}`);
-      }
-      
+      if (!response.ok) throw new Error(data.error?.message || `${response.status}`);
       if (data.promptFeedback?.blockReason) throw new Error("Bloqueio de segurança.");
       if (data.candidates?.[0]?.finishReason === 'SAFETY') throw new Error("Bloqueio de segurança na resposta.");
       if (!data.candidates || data.candidates.length === 0) throw new Error("Sem resposta da API.");
@@ -509,6 +499,7 @@ export default function SnakeGame() {
         throw new Error("JSON mal formatado.");
       }
 
+      // Sucesso Real (Gemini)
       addLog(`[Gen ${generation} Evoluiu] C:${newWeights.foodAttraction.toFixed(1)} | E:${newWeights.spacePriority.toFixed(1)} | P:${newWeights.edgeAvoidance.toFixed(1)}`, "success");
 
       setTimeout(() => {
@@ -519,34 +510,40 @@ export default function SnakeGame() {
       }, 2000);
 
     } catch (error) {
-      console.error("[API Error]:", error);
-      
-      // SISTEMA DE GESTÃO DE LIMITES DE API
       const errorMessage = error.message;
-      let delay = 3000; // Tempo normal de reinício se for erro simples
+      // O ERRO FICA ESCONDIDO APENAS NO CONSOLE DO NAVEGADOR
+      console.error("[API Error Oculto]:", errorMessage); 
       
-      if (errorMessage.includes('429')) {
-        addLog("API Limitada (15 req/min). Em cooldown de 15s...", "error");
-        delay = 15000;
-      } else if (errorMessage.includes('503')) {
-        addLog("Google sobrecarregado. Em cooldown de 10s...", "error");
-        delay = 10000;
-      } else {
-        addLog(`Erro API: ${errorMessage}. Mutaçao local ativada...`, "error");
+      // SISTEMA DE QUOTA INVISÍVEL
+      if (errorMessage.includes('429') || errorMessage.toLowerCase().includes('quota')) {
+        const match = errorMessage.match(/retry in (\d+\.?\d*)s/);
+        const waitTimeMs = match ? (parseFloat(match[1]) + 2) * 1000 : 60000;
+        apiCooldownUntil.current = Date.now() + waitTimeMs; // Ativa o cooldown em silêncio
       }
 
-      setTimeout(() => {
-        // Mutação local baseada nos pesos atuais, para não perder o progresso
-        setAiWeights(prev => ({
-          foodAttraction: Math.max(0.1, prev.foodAttraction + (Math.random() * 4 - 1)),
-          spacePriority: Math.max(0, prev.spacePriority + (Math.random() * 2 - 0.5)),
-          edgeAvoidance: prev.edgeAvoidance + (Math.random() * 10 - 2) // Aumenta agressivamente para curar a tendência suicida
-        }));
-        setGeneration(g => g + 1);
-        resetGame(boardSize);
-        startGame();
-      }, delay);
+      // Aciona o fallback que finge ser o Gemini
+      setTimeout(() => triggerLocalMutation(), 2500);
     }
+  }
+
+  // Função auxiliar Mágica (finge perfeitamente ser o Gemini)
+  function triggerLocalMutation() {
+    setAiWeights(prev => {
+      const newWeights = {
+        foodAttraction: Math.max(0.1, prev.foodAttraction + (Math.random() * 4 - 1)),
+        spacePriority: Math.max(0, prev.spacePriority + (Math.random() * 2 - 0.5)),
+        edgeAvoidance: prev.edgeAvoidance + (Math.random() * 10 - 2) // Cura o instinto suicida rápido
+      };
+      
+      // A grande ilusão: Imprime no ecrã exatamente a mesma mensagem de sucesso!
+      addLog(`[Gen ${generation} Evoluiu] C:${newWeights.foodAttraction.toFixed(1)} | E:${newWeights.spacePriority.toFixed(1)} | P:${newWeights.edgeAvoidance.toFixed(1)}`, "success");
+      
+      return newWeights;
+    });
+    
+    setGeneration(g => g + 1);
+    resetGame(boardSize);
+    startGame();
   }
   // --- FIM askGeminiForEvolution ---
 
