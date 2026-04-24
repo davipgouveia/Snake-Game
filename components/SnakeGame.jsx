@@ -95,7 +95,7 @@ function oppositeDirection(a, b) {
   return a.x + b.x === 0 && a.y + b.y === 0;
 }
 
-// --- CÉREBRO DA IA COM PENSAMENTOS ---
+// --- CÉREBRO DA IA (Agora com fator caótico para IA Burra) ---
 function calculateWeightedMove(head, food, snake, obstacles, boardSize, lastMove, weights) {
   const possibleMoves = [
     DIRECTIONS.ArrowUp, DIRECTIONS.ArrowDown,
@@ -134,7 +134,6 @@ function calculateWeightedMove(head, food, snake, obstacles, boardSize, lastMove
 
   let bestMove = null;
   let highestScore = -Infinity;
-  let currentThought = "A processar...";
 
   for (const move of possibleMoves) {
     if (oppositeDirection(lastMove, move)) continue;
@@ -150,7 +149,8 @@ function calculateWeightedMove(head, food, snake, obstacles, boardSize, lastMove
     const distToFood = Math.abs(nextX - food.x) + Math.abs(nextY - food.y);
     const freeSpace = safe ? countFreeSpace(nextX, nextY, boardSize * 3) : 0;
 
-    let score = 0;
+    // Fator caótico: Se os pesos estiverem a zero, a cobra vagueia aleatoriamente
+    let score = Math.random() * 0.5;
 
     // 1. Atração por Comida
     score += (100 / (distToFood + 1)) * weights.foodAttraction;
@@ -173,23 +173,10 @@ function calculateWeightedMove(head, food, snake, obstacles, boardSize, lastMove
     if (score > highestScore) {
       highestScore = score;
       bestMove = move;
-
-      // Gerar pensamento baseado na decisão atual
-      if (isWallCrash && weights.edgeAvoidance > 0) {
-        currentThought = "PÂNICO: Evitando a parede!";
-      } else if (isWallCrash && weights.edgeAvoidance < 0) {
-        currentThought = "ATRAÇÃO FATAL: Direto para a parede!";
-      } else if (distToFood < 4 && weights.foodAttraction > 2) {
-        currentThought = `Foco: Comida (Dist: ${distToFood})`;
-      } else if (freeSpace < boardSize * 1.5 && weights.spacePriority > 0) {
-        currentThought = "Foco: Espaço apertado. A fugir!";
-      } else {
-        currentThought = "A explorar...";
-      }
     }
   }
 
-  return { move: bestMove, thought: currentThought };
+  return { move: bestMove };
 }
 // --------------------------------------------------------
 
@@ -286,18 +273,13 @@ export default function SnakeGame() {
   // --- ESTADOS DO TERMINAL ---
   const [terminalLogs, setTerminalLogs] = useState([]);
   const terminalEndRef = useRef(null);
-  const lastThoughtRef = useRef('');
 
   const addLog = (msg, type = 'system') => {
     setTerminalLogs(prev => {
       const newLogs = [...prev, { id: Date.now() + Math.random(), msg, type, time: new Date().toLocaleTimeString([], { hour12: false }) }];
-      return newLogs.slice(-30); // Mantém apenas os últimos 30 logs para não pesar a RAM
+      return newLogs.slice(-30); 
     });
   };
-
-  //useEffect(() => {
-  //    terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  //}, [terminalLogs]);
   // --------------------------
 
   const [difficultyId, setDifficultyId] = useState('normal');
@@ -434,22 +416,22 @@ export default function SnakeGame() {
     return () => cancelAnimationFrame(frameId);
     // eslint-disable-next-line
   }, [status, boardSize, difficulty.speed, difficulty.score]);
-// --- CONSULTOR GEMINI (ILUSÃO PERFEITA) ---
+
+
+  // --- CONSULTOR GEMINI COM "PENSAMENTOS" NO JSON ---
   async function askGeminiForEvolution(deathReason, length, ticks) {
     const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-
-    // Traduz o motivo da morte para um texto mais amigável no terminal
     const reasonPT = deathReason === 'self' ? 'o próprio corpo' : deathReason === 'wall' ? 'a parede' : 'um obstáculo';
     
     addLog(`[Morto] Colisão com ${reasonPT}. Tam: ${length}`, "system");
-    addLog("A processar evolução da IA...", "system"); // O utilizador acha que o Gemini está sempre a pensar
+    addLog("A processar evolução da IA...", "system"); 
 
-    // Se não há chave ou a API está em repouso (cooldown), ativamos a mutação local silenciosamente
     if (!apiKey || Date.now() < apiCooldownUntil.current) {
       setTimeout(() => triggerLocalMutation(), 2000);
       return;
     }
 
+    // Pedimos explicitamente o campo "thought" no JSON!
     const prompt = `
     Você é um cientista de dados treinando uma Inteligência Artificial para o jogo Snake.
     O agente da Geração ${generation} falhou e a partida terminou.
@@ -467,9 +449,14 @@ export default function SnakeGame() {
     Se a cobra colidiu com a parede (wall), precisa de mais edgeAvoidance.
     Se ficou muito pequena por muito tempo, precisa de mais foodAttraction.
 
-    Retorne APENAS um objeto JSON válido (sem markdown, sem crases, apenas o JSON puro) com os novos pesos ajustados (pode usar números decimais).
+    Retorne APENAS um objeto JSON válido. O JSON DEVE conter um campo "thought" com uma breve frase em primeira pessoa explicando por que morreu e o que está a alterar.
     Exemplo do formato exato:
-    { "foodAttraction": 12.5, "spacePriority": 5.0, "edgeAvoidance": 2.2 }
+    { 
+      "thought": "Bati na parede porque o meu medo de bordas estava muito baixo. Vou aumentar o edgeAvoidance.",
+      "foodAttraction": 12.5, 
+      "spacePriority": 5.0, 
+      "edgeAvoidance": 2.2 
+    }
     `;
 
     try {
@@ -499,7 +486,11 @@ export default function SnakeGame() {
         throw new Error("JSON mal formatado.");
       }
 
-      // Sucesso Real (Gemini)
+      // Mostra o pensamento do Gemini no terminal com cor amarela/destaque
+      if (newWeights.thought) {
+        addLog(`💡 Gemini: "${newWeights.thought}"`, "gemini-thought");
+      }
+
       addLog(`[Gen ${generation} Evoluiu] C:${newWeights.foodAttraction.toFixed(1)} | E:${newWeights.spacePriority.toFixed(1)} | P:${newWeights.edgeAvoidance.toFixed(1)}`, "success");
 
       setTimeout(() => {
@@ -507,35 +498,37 @@ export default function SnakeGame() {
         setGeneration(g => g + 1);
         resetGame(boardSize);
         startGame();
-      }, 2000);
+      }, 3500); // Mais tempo para o utilizador conseguir ler o pensamento
 
     } catch (error) {
       const errorMessage = error.message;
-      // O ERRO FICA ESCONDIDO APENAS NO CONSOLE DO NAVEGADOR
       console.error("[API Error Oculto]:", errorMessage); 
       
-      // SISTEMA DE QUOTA INVISÍVEL
       if (errorMessage.includes('429') || errorMessage.toLowerCase().includes('quota')) {
         const match = errorMessage.match(/retry in (\d+\.?\d*)s/);
         const waitTimeMs = match ? (parseFloat(match[1]) + 2) * 1000 : 60000;
-        apiCooldownUntil.current = Date.now() + waitTimeMs; // Ativa o cooldown em silêncio
+        apiCooldownUntil.current = Date.now() + waitTimeMs; 
       }
 
-      // Aciona o fallback que finge ser o Gemini
       setTimeout(() => triggerLocalMutation(), 2500);
     }
   }
 
-  // Função auxiliar Mágica (finge perfeitamente ser o Gemini)
   function triggerLocalMutation() {
     setAiWeights(prev => {
       const newWeights = {
         foodAttraction: Math.max(0.1, prev.foodAttraction + (Math.random() * 4 - 1)),
         spacePriority: Math.max(0, prev.spacePriority + (Math.random() * 2 - 0.5)),
-        edgeAvoidance: prev.edgeAvoidance + (Math.random() * 10 - 2) // Cura o instinto suicida rápido
+        edgeAvoidance: prev.edgeAvoidance + (Math.random() * 10 - 2) 
       };
       
-      // A grande ilusão: Imprime no ecrã exatamente a mesma mensagem de sucesso!
+      const pensamentosLocais = [
+        "Hmm, parece que subestimei aquela parede. Aumentando cautela.",
+        "Preciso de mais espaço para manobrar! Vou focar nisso.",
+        "Morri muito rápido, vou focar os meus instintos de sobrevivência."
+      ];
+      addLog(`💡 IA: "${pensamentosLocais[Math.floor(Math.random() * pensamentosLocais.length)]}"`, "gemini-thought");
+
       addLog(`[Gen ${generation} Evoluiu] C:${newWeights.foodAttraction.toFixed(1)} | E:${newWeights.spacePriority.toFixed(1)} | P:${newWeights.edgeAvoidance.toFixed(1)}`, "success");
       
       return newWeights;
@@ -548,7 +541,6 @@ export default function SnakeGame() {
   // --- FIM askGeminiForEvolution ---
 
   function runGameTick() {
-    // 1. TRAVÃO INSTANTÂNEO: Se já não estiver a correr, não processa mais nada!
     if (statusRef.current !== 'running') return;
 
     const currentSnake = snakeRef.current;
@@ -567,25 +559,18 @@ export default function SnakeGame() {
         nextDirection = aiResult.move;
         setQueuedDirection(null);
         queuedDirectionRef.current = null;
-        
-        if (aiResult.thought !== lastThoughtRef.current && aiResult.thought !== "A explorar...") {
-          lastThoughtRef.current = aiResult.thought;
-        }
       }
     }
 
-    // Impede a cobra de dar marcha-atrás
     if (oppositeDirection(lastMoveRef.current, nextDirection)) {
       nextDirection = directionRef.current;
       setQueuedDirection(null);
       queuedDirectionRef.current = null;
     }
 
-    // Calcula a próxima posição da cabeça
     const head = currentSnake[0];
     const nextHead = { id: getNextSegmentId(), x: head.x + nextDirection.x, y: head.y + nextDirection.y };
 
-    // --- DEFINIÇÃO DAS COLISÕES (Isto é o que estava a faltar!) ---
     const hitWall = nextHead.x < 0 || nextHead.x >= boardSize || nextHead.y < 0 || nextHead.y >= boardSize;
     const hitObstacle = obstaclesRef.current.some((obs) => isSameCell(obs, nextHead));
     const ateFood = isSameCell(nextHead, foodRef.current);
@@ -593,16 +578,14 @@ export default function SnakeGame() {
     const tailWillStay = ateFood || growthRef.current > 0;
     const collisionSegments = tailWillStay ? currentSnake : currentSnake.slice(0, -1);
     const hitSelf = collisionSegments.some((segment) => isSameCell(segment, nextHead));
-    // ---------------------------------------------------------------
 
-    // Verifica se morreu
     if (hitWall || hitObstacle || hitSelf) {
       const reason = hitSelf ? 'self' : (hitObstacle ? 'obstacle' : 'wall');
       setCrashType(reason);
 
       if (autoPlayRef.current) {
         setStatus('analyzing');
-        statusRef.current = 'analyzing'; // Trava o loop
+        statusRef.current = 'analyzing'; 
         askGeminiForEvolution(reason, currentSnake.length, lifetimeTicksRef.current);
       } else {
         setStatus('gameover');
@@ -611,7 +594,6 @@ export default function SnakeGame() {
       return;
     }
 
-    // Move a cobra
     const nextSnake = currentSnake;
     nextSnake.unshift(nextHead);
 
@@ -621,7 +603,6 @@ export default function SnakeGame() {
     lastMoveRef.current = nextDirection;
     setGlowPosition({ x: ((nextHead.x + 0.5) / boardSize) * 100, y: ((nextHead.y + 0.5) / boardSize) * 100 });
 
-    // Lógica ao comer
     if (ateFood) {
       growthRef.current += 1;
       const points = difficulty.score;
@@ -924,7 +905,7 @@ export default function SnakeGame() {
                     let color = '#fff';
                     if (log.type === 'error') color = '#ff6b8a';
                     if (log.type === 'success') color = '#6cf7d6';
-                    if (log.type === 'thought') color = '#a1a1aa';
+                    if (log.type === 'gemini-thought') color = '#f7e06c'; // Nova cor amarela/dourada para os pensamentos!
 
                     return (
                       <div key={log.id} style={{ color }}>
