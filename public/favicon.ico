@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="snakeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6cf7d6" />
+      <stop offset="100%" stop-color="#28c9ff" />
+    </linearGradient>
+  </defs>
+  <!-- Fundo -->
+  <rect width="100" height="100" rx="22" fill="#040a12" />
+  <!-- Corpo da Cobra (S-shape) -->
+  <path d="M25 75 V35 A 10 10 0 0 1 35 25 H75 V45 H45 V55 H75 V75 Z" fill="url(#snakeGrad)" />
+  <!-- Olho Escuro -->
+  <circle cx="60" cy="35" r="5" fill="#040a12" />
+  <!-- Brilho do Olho -->
+  <circle cx="60" cy="35" r="2" fill="#ffffff" />
+  <!-- Comida / Maçã -->
+  <circle cx="75" cy="80" r="6" fill="#ff6b8a" />
+</svg>

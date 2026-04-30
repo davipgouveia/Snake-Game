@@ -61,7 +61,7 @@ const THEMES = [
 ];
 
 const INITIAL_DIRECTION = { x: 1, y: 0 };
-const DEBUG_SNAKE = process.env.NODE_ENV !== 'production';
+const MAX_STAMINA = 150;
 
 function getRandomInt(max) {
   return Math.floor(Math.random() * max);
@@ -90,12 +90,13 @@ function oppositeDirection(a, b) {
   return a.x + b.x === 0 && a.y + b.y === 0;
 }
 
-// --- CÉREBRO DA IA (Gulosa por Power-ups) ---
-function calculateWeightedMove(head, food, snake, obstacles, powerups, boardSize, lastMove, weights, isIntangible) {
+function calculateWeightedMove(head, food, snake, obstacles, powerups, boardSize, lastMove, weights, isIntangible, currentStamina) {
   const possibleMoves = [
     DIRECTIONS.ArrowUp, DIRECTIONS.ArrowDown,
     DIRECTIONS.ArrowLeft, DIRECTIONS.ArrowRight,
   ];
+
+  const bodyLength = snake.length;
 
   const isSafe = (x, y) => {
     if (x < 0 || x >= boardSize || y < 0 || y >= boardSize) return isIntangible;
@@ -107,7 +108,7 @@ function calculateWeightedMove(head, food, snake, obstacles, powerups, boardSize
     return true;
   };
 
-  const countFreeSpace = (startX, startY, limit = 50) => {
+  const countFreeSpace = (startX, startY, limit = 100) => {
     let queue = [{ x: startX, y: startY }];
     let visited = new Set([`${startX},${startY}`]);
     let count = 0;
@@ -130,7 +131,7 @@ function calculateWeightedMove(head, food, snake, obstacles, powerups, boardSize
 
   let bestMove = null;
   let highestScore = -Infinity;
-  let currentThought = "A explorar o mapa...";
+  let currentThought = null;
 
   for (const move of possibleMoves) {
     if (oppositeDirection(lastMove, move)) continue;
@@ -143,7 +144,7 @@ function calculateWeightedMove(head, food, snake, obstacles, powerups, boardSize
     const isSelfCrash = (!safe && !isWallCrash) ? 1 : 0;
 
     const distToFood = Math.abs(nextX - food.x) + Math.abs(nextY - food.y);
-    const freeSpace = safe ? countFreeSpace(nextX, nextY, boardSize * 3) : 0;
+    const freeSpace = safe ? countFreeSpace(nextX, nextY, Math.max(boardSize * 3, bodyLength + 10)) : 0;
     
     let nearestPowerupDist = Infinity;
     for(const p of powerups) {
@@ -151,24 +152,31 @@ function calculateWeightedMove(head, food, snake, obstacles, powerups, boardSize
         if (pDist < nearestPowerupDist) nearestPowerupDist = pDist;
     }
 
-    let score = Math.random() * 0.5;
+    let score = Math.random() * 0.5; 
+    let dynamicFoodAttraction = weights.foodAttraction;
 
-    // Atração por Comida (e Power-ups!)
-    score += (100 / (distToFood + 1)) * weights.foodAttraction;
-    
-    if (nearestPowerupDist !== Infinity) {
-        // Multiplicador massivo para Power-ups se eles existirem
-        score += (300 / (nearestPowerupDist + 1)) * weights.foodAttraction; 
-    }
-
-    if (isSelfCrash && !isIntangible) {
-      score -= 1000 * weights.spacePriority;
+    if (freeSpace < bodyLength && !isIntangible && safe) {
+      score -= 5000 * weights.spacePriority; 
+      if (score > highestScore) currentThought = "Beco evitado! Priorizando espaço.";
     } else {
       score += freeSpace * weights.spacePriority;
     }
 
+    if (currentStamina < (MAX_STAMINA * 0.3)) {
+      dynamicFoodAttraction *= weights.staminaPriority; 
+      if (score > highestScore) currentThought = "Fôlego crítico! Rota direta para comida!";
+    }
+
+    score += (100 / (distToFood + 1)) * dynamicFoodAttraction;
+    
+    if (nearestPowerupDist !== Infinity) {
+        score += (300 / (nearestPowerupDist + 1)) * dynamicFoodAttraction; 
+    }
+
+    if (isSelfCrash && !isIntangible) score -= 10000 * weights.spacePriority;
+
     if (isWallCrash) {
-        if (!isIntangible) score -= 1000 * weights.edgeAvoidance;
+        if (!isIntangible) score -= 10000 * weights.edgeAvoidance;
     } else {
       const huggingWall = (nextX === 0 || nextX === boardSize - 1 || nextY === 0 || nextY === boardSize - 1) ? 1 : 0;
       score -= huggingWall * weights.edgeAvoidance;
@@ -178,17 +186,14 @@ function calculateWeightedMove(head, food, snake, obstacles, powerups, boardSize
       highestScore = score;
       bestMove = move;
 
-      // Define os Pensamentos da IA baseado no Score Dominante
-      if (nearestPowerupDist < distToFood + 5) currentThought = "⚡ Power-up detetado! Foco alterado.";
-      else if (isIntangible && isWallCrash) currentThought = "👻 Modo Fantasma: A atravessar a parede!";
-      else if (!safe && !isIntangible) currentThought = "PÂNICO: Perigo iminente!";
-      else if (distToFood < 4) currentThought = `Foco: Comida a ${distToFood} passos.`;
+      if (nearestPowerupDist < distToFood + 5 && currentStamina > 40) currentThought = "⚡ Power-up detetado!";
+      else if (isIntangible && isWallCrash) currentThought = "👻 Modo Fantasma: Atravessando parede.";
+      else if (!safe && !isIntangible) currentThought = "⚠️ Risco de colisão detetado!";
     }
   }
 
   return { move: bestMove, thought: currentThought };
 }
-// --------------------------------------------------------
 
 function createFood(boardSize, snake, obstacles = [], powerups = []) {
   let position = { x: getRandomInt(boardSize), y: getRandomInt(boardSize) };
@@ -265,22 +270,58 @@ export default function SnakeGame() {
   const [autoPlay, setAutoPlay] = useState(false);
   const autoPlayRef = useRef(false);
 
-  const defaultDumbWeights = { foodAttraction: 0.1, spacePriority: 0.0, edgeAvoidance: -50.0 };
+  const [enablePowerups, setEnablePowerups] = useState(true);
+  const [enableObstacles, setEnableObstacles] = useState(true);
+  const enablePowerupsRef = useRef(true);
+  const enableObstaclesRef = useRef(true);
+
+  const defaultDumbWeights = { foodAttraction: 2.0, spacePriority: 0.5, edgeAvoidance: 2.0, staminaPriority: 1.0 };
 
   const [generation, setGeneration] = useState(1);
   const [aiWeights, setAiWeights] = useState(defaultDumbWeights);
   const aiWeightsRef = useRef(aiWeights);
   const apiCooldownUntil = useRef(0);
 
-  const [terminalLogs, setTerminalLogs] = useState([]);
-  const terminalEndRef = useRef(null);
+  // --- PLACAR E PONTUAÇÕES ---
+  const [score, setScore] = useState(0);
+  const scoreRef = useRef(0);
+  const [userBestScore, setUserBestScore] = useState(0);
+  const [aiBestScore, setAiBestScore] = useState(0);
 
-  const addLog = (msg, type = 'system') => {
-    setTerminalLogs(prev => {
+  // --- TERMINAIS SEPARADOS ---
+  const [evolutionLogs, setEvolutionLogs] = useState([]);
+  const [gameplayLogs, setGameplayLogs] = useState([]);
+  const evolutionTerminalRef = useRef(null);
+  const gameplayTerminalRef = useRef(null);
+
+  const addEvolutionLog = (msg, type = 'system') => {
+    setEvolutionLogs(prev => {
       const newLogs = [...prev, { id: Date.now() + Math.random(), msg, type, time: new Date().toLocaleTimeString([], { hour12: false }) }];
-      return newLogs.slice(-30); 
+      return newLogs.slice(-15);
     });
   };
+
+  const addGameplayLog = (msg, type = 'thought') => {
+    setGameplayLogs(prev => {
+      const newLogs = [...prev, { id: Date.now() + Math.random(), msg, type, time: new Date().toLocaleTimeString([], { hour12: false }) }];
+      return newLogs.slice(-15);
+    });
+  };
+
+  // Auto-scroll independente para os terminais
+  useEffect(() => {
+    if (evolutionTerminalRef.current) {
+      const { scrollHeight, clientHeight } = evolutionTerminalRef.current;
+      evolutionTerminalRef.current.scrollTo({ top: scrollHeight - clientHeight, behavior: 'smooth' });
+    }
+  }, [evolutionLogs]);
+
+  useEffect(() => {
+    if (gameplayTerminalRef.current) {
+      const { scrollHeight, clientHeight } = gameplayTerminalRef.current;
+      gameplayTerminalRef.current.scrollTo({ top: scrollHeight - clientHeight, behavior: 'smooth' });
+    }
+  }, [gameplayLogs]);
 
   const [difficultyId, setDifficultyId] = useState('normal');
   const [themeId, setThemeId] = useState('neon');
@@ -295,13 +336,15 @@ export default function SnakeGame() {
   const powerupStateRef = useRef(null);
   const powerupTimerRef = useRef(0);
 
+  const [stamina, setStamina] = useState(MAX_STAMINA);
+  const staminaRef = useRef(MAX_STAMINA);
+
   const [direction, setDirection] = useState(INITIAL_DIRECTION);
   const [queuedDirection, setQueuedDirection] = useState(null);
   const [food, setFood] = useState({ x: 0, y: 0 });
   const [status, setStatus] = useState('ready');
   const statusRef = useRef('ready');
-  const [score, setScore] = useState(0);
-  const [bestScore, setBestScore] = useState(0);
+  
   const [lastMove, setLastMove] = useState({ x: 1, y: 0 });
   const [foodSpawnId, setFoodSpawnId] = useState(0);
   const [eatUntilMs, setEatUntilMs] = useState(0);
@@ -334,7 +377,6 @@ export default function SnakeGame() {
     return segmentIdRef.current;
   }
 
-  // --- SINCRONIZAÇÃO GLOBAL DO TEMA (Remove Barras de Rolagem e Força Layout) ---
   useEffect(() => {
     if (typeof window !== 'undefined') {
       document.documentElement.style.backgroundColor = '#040a12';
@@ -342,22 +384,29 @@ export default function SnakeGame() {
       document.body.style.color = '#ffffff';
       document.body.style.margin = "0";
       document.body.style.minHeight = "100vh";
-      document.body.style.overflowX = "hidden"; // Remove Horizontal Scrollbar!
+      document.body.style.overflowX = "hidden";
     }
   }, [theme]);
 
+  useEffect(() => { enablePowerupsRef.current = enablePowerups; }, [enablePowerups]);
+  useEffect(() => { enableObstaclesRef.current = enableObstacles; }, [enableObstacles]);
   useEffect(() => { autoPlayRef.current = autoPlay; }, [autoPlay]);
   useEffect(() => { aiWeightsRef.current = aiWeights; }, [aiWeights]);
   useEffect(() => { statusRef.current = status; }, [status]);
 
   useEffect(() => {
-    const savedBest = Number(window.localStorage.getItem('snake-best-score') ?? 0);
-    if (Number.isFinite(savedBest)) setBestScore(savedBest);
+    const savedUserBest = Number(window.localStorage.getItem('snake-user-best') ?? 0);
+    const savedAiBest = Number(window.localStorage.getItem('snake-ai-best') ?? 0);
+    if (Number.isFinite(savedUserBest)) setUserBestScore(savedUserBest);
+    if (Number.isFinite(savedAiBest)) setAiBestScore(savedAiBest);
   }, []);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') window.localStorage.setItem('snake-best-score', String(bestScore));
-  }, [bestScore]);
+    if (typeof window !== 'undefined') {
+        window.localStorage.setItem('snake-user-best', String(userBestScore));
+        window.localStorage.setItem('snake-ai-best', String(aiBestScore));
+    }
+  }, [userBestScore, aiBestScore]);
 
   useEffect(() => { directionRef.current = direction; }, [direction]);
   useEffect(() => { queuedDirectionRef.current = queuedDirection; }, [queuedDirection]);
@@ -366,6 +415,7 @@ export default function SnakeGame() {
   useEffect(() => { obstaclesRef.current = obstacles; }, [obstacles]);
   useEffect(() => { powerupsRef.current = powerups; }, [powerups]);
   useEffect(() => { lastMoveRef.current = lastMove; }, [lastMove]);
+  useEffect(() => { staminaRef.current = stamina; }, [stamina]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -378,7 +428,7 @@ export default function SnakeGame() {
   useEffect(() => {
     resetGame(boardSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardSize]);
+  }, [boardSize, enableObstacles, enablePowerups]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -420,13 +470,14 @@ export default function SnakeGame() {
     // eslint-disable-next-line
   }, [status, boardSize, difficulty.speed, difficulty.score]);
 
-  // --- CONSULTOR GEMINI ---
   async function askGeminiForEvolution(deathReason, length, ticks) {
     const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-    const reasonPT = deathReason === 'self' ? 'o próprio corpo' : deathReason === 'wall' ? 'a parede' : 'um obstáculo';
+    const reasonPT = deathReason === 'self' ? 'o próprio corpo' : 
+                     deathReason === 'wall' ? 'a parede' : 
+                     deathReason === 'starvation' ? 'inanição (falta de fôlego/stamina)' : 'um obstáculo';
     
-    addLog(`[Morto] Colisão com ${reasonPT}. Tam: ${length}`, "system");
-    addLog("A processar evolução da IA...", "system"); 
+    addEvolutionLog(`☠️ Morto por ${reasonPT}. Tamanho: ${length}`, "system");
+    addEvolutionLog("A conectar à API (Gemini)...", "system"); 
 
     if (!apiKey || Date.now() < apiCooldownUntil.current) {
       setTimeout(() => triggerLocalMutation(), 2000);
@@ -434,29 +485,33 @@ export default function SnakeGame() {
     }
 
     const prompt = `
-    Você é um cientista de dados treinando uma Inteligência Artificial para o jogo Snake.
-    O agente da Geração ${generation} falhou e a partida terminou.
-    Motivo da falha: Colidiu com ${reasonPT}.
-    Tamanho alcançado: ${length} blocos.
-    Tempo de vida: ${ticks} passos.
+    Você é a consciência de uma Inteligência Artificial que joga Snake e acabou de morrer.
+    A sua Geração ${generation} falhou.
+    Motivo da morte: Colidiu com ${reasonPT}.
+    Tamanho alcançado: ${length}. Passos dados na vida: ${ticks}.
     
-    Os pesos atuais da IA são:
-    - foodAttraction (Atração por comida): ${aiWeightsRef.current.foodAttraction}
-    - spacePriority (Prioridade de espaço livre): ${aiWeightsRef.current.spacePriority}
-    - edgeAvoidance (Evitar as bordas): ${aiWeightsRef.current.edgeAvoidance}
+    Seus pesos genéticos atuais são:
+    - foodAttraction (Vontade de comer): ${aiWeightsRef.current.foodAttraction.toFixed(2)}
+    - spacePriority (Vontade de fugir do próprio corpo e evitar becos): ${aiWeightsRef.current.spacePriority.toFixed(2)}
+    - edgeAvoidance (Medo das paredes do mapa): ${aiWeightsRef.current.edgeAvoidance.toFixed(2)}
+    - staminaPriority (Desespero por comida quando o fôlego acaba): ${aiWeightsRef.current.staminaPriority.toFixed(2)}
     
-    Analise a causa da falha e os pesos atuais. 
-    Se a cobra colidiu consigo mesma (self), precisa de mais spacePriority.
-    Se a cobra colidiu com a parede (wall), precisa de mais edgeAvoidance.
-    Se ficou muito pequena por muito tempo, precisa de mais foodAttraction.
-
-    Retorne APENAS um objeto JSON válido. O JSON DEVE conter um campo "thought" com uma breve frase em primeira pessoa explicando por que morreu e o que está a alterar.
-    Exemplo do formato exato:
-    { 
-      "thought": "Bati na parede porque o meu medo de bordas estava muito baixo. Vou aumentar o edgeAvoidance.",
-      "foodAttraction": 12.5, 
-      "spacePriority": 5.0, 
-      "edgeAvoidance": 2.2 
+    REGRAS OBRIGATÓRIAS PARA A SUA EVOLUÇÃO:
+    1. Se morreu na PAREDE, você precisa de OBRIGATORIAMENTE aumentar o "edgeAvoidance".
+    2. Se bateu no PRÓPRIO CORPO, aumente drasticamente o "spacePriority".
+    3. Se morreu por INANIÇÃO (falta de fôlego), aumente o "staminaPriority" e o "foodAttraction".
+    4. TODOS os valores devem ser números POSITIVOS (nunca use números negativos).
+    5. O campo "thought" DEVE ser escrito OBRIGATORIAMENTE em Português (PT-BR) em primeira pessoa.
+    
+    Retorne APENAS um JSON válido.
+    
+    Exemplo de retorno esperado:
+    {
+      "thought": "Caramba, bati na parede porque fui muito guloso. Vou aumentar o meu medo de bordas.",
+      "foodAttraction": 5.5,
+      "spacePriority": 2.0,
+      "edgeAvoidance": 50.0,
+      "staminaPriority": 1.5
     }
     `;
 
@@ -466,25 +521,22 @@ export default function SnakeGame() {
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json" }
+          generationConfig: { responseMimeType: "application/json", temperature: 0.7 }
         })
       });
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error?.message || `${response.status}`);
-      if (data.promptFeedback?.blockReason) throw new Error("Bloqueio de segurança.");
-      if (data.candidates?.[0]?.finishReason === 'SAFETY') throw new Error("Bloqueio de segurança na resposta.");
-      if (!data.candidates || data.candidates.length === 0) throw new Error("Sem resposta da API.");
-
-      const text = data.candidates[0].content.parts[0].text;
+      let text = data.candidates[0].content.parts[0].text;
+      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
       const newWeights = JSON.parse(text);
 
-      if (typeof newWeights.foodAttraction !== 'number' || typeof newWeights.edgeAvoidance !== 'number') {
-        throw new Error("JSON mal formatado.");
-      }
+      if (newWeights.edgeAvoidance < 0) newWeights.edgeAvoidance = Math.abs(newWeights.edgeAvoidance);
+      if (newWeights.spacePriority < 0) newWeights.spacePriority = Math.abs(newWeights.spacePriority);
+      if (typeof newWeights.staminaPriority !== 'number') newWeights.staminaPriority = aiWeightsRef.current.staminaPriority + 0.5;
 
-      if (newWeights.thought) addLog(`💡 Gemini: "${newWeights.thought}"`, "gemini-thought");
-      addLog(`[Gen ${generation} Evoluiu] C:${newWeights.foodAttraction.toFixed(1)} | E:${newWeights.spacePriority.toFixed(1)} | P:${newWeights.edgeAvoidance.toFixed(1)}`, "success");
+      if (newWeights.thought) addEvolutionLog(`🧠 IA: "${newWeights.thought}"`, "gemini-thought");
+      addEvolutionLog(`[Evolução] C:${newWeights.foodAttraction.toFixed(1)} | E:${newWeights.spacePriority.toFixed(1)} | P:${newWeights.edgeAvoidance.toFixed(1)} | S:${newWeights.staminaPriority.toFixed(1)}`, "success");
 
       setTimeout(() => {
         setAiWeights(newWeights);
@@ -494,15 +546,8 @@ export default function SnakeGame() {
       }, 3500); 
 
     } catch (error) {
-      const errorMessage = error.message;
-      console.error("[API Error Oculto]:", errorMessage); 
-      
-      if (errorMessage.includes('429') || errorMessage.toLowerCase().includes('quota')) {
-        const match = errorMessage.match(/retry in (\d+\.?\d*)s/);
-        const waitTimeMs = match ? (parseFloat(match[1]) + 2) * 1000 : 60000;
-        apiCooldownUntil.current = Date.now() + waitTimeMs; 
-      }
-      setTimeout(() => triggerLocalMutation(), 2500);
+      if (error.message.includes('429')) apiCooldownUntil.current = Date.now() + 60000;
+      setTimeout(() => triggerLocalMutation(), 1500);
     }
   }
 
@@ -511,15 +556,11 @@ export default function SnakeGame() {
       const newWeights = {
         foodAttraction: Math.max(0.1, prev.foodAttraction + (Math.random() * 4 - 1)),
         spacePriority: Math.max(0, prev.spacePriority + (Math.random() * 2 - 0.5)),
-        edgeAvoidance: prev.edgeAvoidance + (Math.random() * 10 - 2) 
+        edgeAvoidance: Math.abs(prev.edgeAvoidance + (Math.random() * 10 - 2)),
+        staminaPriority: prev.staminaPriority ? prev.staminaPriority + (Math.random() * 1.5) : 1.5
       };
-      const pensamentosLocais = [
-        "Hmm, parece que subestimei aquela parede. Aumentando cautela.",
-        "Preciso de mais espaço para manobrar! Vou focar nisso.",
-        "Morri muito rápido, vou focar os meus instintos de sobrevivência."
-      ];
-      addLog(`💡 IA: "${pensamentosLocais[Math.floor(Math.random() * pensamentosLocais.length)]}"`, "gemini-thought");
-      addLog(`[Gen ${generation} Evoluiu] C:${newWeights.foodAttraction.toFixed(1)} | E:${newWeights.spacePriority.toFixed(1)} | P:${newWeights.edgeAvoidance.toFixed(1)}`, "success");
+      addEvolutionLog(`💡 IA Local: "Ajustando parâmetros de segurança."`, "gemini-thought");
+      addEvolutionLog(`[Evolução] Mutações aplicadas localmente.`, "success");
       return newWeights;
     });
     setGeneration(g => g + 1);
@@ -527,7 +568,6 @@ export default function SnakeGame() {
     startGame();
   }
 
-  // --- SPAWNERS Seguros ---
   function spawnObstacle() {
     let position = { x: getRandomInt(boardSize), y: getRandomInt(boardSize) };
     let attempts = 0;
@@ -551,8 +591,13 @@ export default function SnakeGame() {
 
   function spawnPowerup() {
     if (powerupsRef.current.length >= 2) return; 
-    const types = ['bonus', 'shrink', 'intangivel'];
-    const type = types[Math.floor(Math.random() * types.length)];
+    
+    // BALANCEAMENTO: Powerup azul (shrink) agora é mais raro (15%)
+    const rand = Math.random();
+    let type = 'bonus'; 
+    if (rand > 0.85) type = 'shrink'; // 15% de chance
+    else if (rand > 0.60) type = 'intangivel'; // 25% de chance
+    // Os outros 60% são para o 'bonus' de pontos
     
     let position = { x: getRandomInt(boardSize), y: getRandomInt(boardSize), type, id: Date.now() + Math.random() };
     let attempts = 0;
@@ -580,7 +625,6 @@ export default function SnakeGame() {
     }
   }
 
-  // --- O LOOP DO JOGO ---
   function runGameTick() {
     if (statusRef.current !== 'running') return;
 
@@ -588,22 +632,36 @@ export default function SnakeGame() {
     if (currentSnake.length === 0) return;
 
     lifetimeTicksRef.current += 1;
+    staminaRef.current -= 1;
+    setStamina(staminaRef.current);
+
+    if (staminaRef.current <= 0) {
+        setCrashType('starvation');
+        if (autoPlayRef.current) {
+            setStatus('analyzing');
+            statusRef.current = 'analyzing'; 
+            askGeminiForEvolution('starvation', currentSnake.length, lifetimeTicksRef.current);
+        } else {
+            setStatus('gameover');
+            statusRef.current = 'gameover';
+        }
+        return;
+    }
+
     let nextDirection = queuedDirectionRef.current ?? directionRef.current;
-    
     const isIntangibleStatus = powerupStateRef.current === 'intangivel' && powerupTimerRef.current > 0;
 
     if (autoPlayRef.current) {
       const aiResult = calculateWeightedMove(
-        currentSnake[0], foodRef.current, currentSnake, obstaclesRef.current, powerupsRef.current, boardSize, lastMoveRef.current, aiWeightsRef.current, isIntangibleStatus
+        currentSnake[0], foodRef.current, currentSnake, obstaclesRef.current, powerupsRef.current, boardSize, lastMoveRef.current, aiWeightsRef.current, isIntangibleStatus, staminaRef.current
       );
       if (aiResult.move) {
         nextDirection = aiResult.move;
         setQueuedDirection(null);
         queuedDirectionRef.current = null;
         
-        // Log "Thought" apenas se for uma mudança brusca (ex: Powerup avistado)
-        if (aiResult.thought !== lastThoughtRef.current && (aiResult.thought.includes('Power-up') || aiResult.thought.includes('Fantasma'))) {
-            addLog(aiResult.thought, "thought");
+        if (aiResult.thought && aiResult.thought !== lastThoughtRef.current) {
+            addGameplayLog(`💭 ${aiResult.thought}`, "thought");
             lastThoughtRef.current = aiResult.thought;
         }
       }
@@ -622,7 +680,7 @@ export default function SnakeGame() {
         powerupTimerRef.current -= 1;
         if (powerupTimerRef.current === 0) {
             powerupStateRef.current = null;
-            if(!autoPlayRef.current) addLog("A Intangibilidade acabou!", "system");
+            if(autoPlayRef.current) addGameplayLog("Modo Fantasma finalizado.", "thought");
         }
     }
 
@@ -671,18 +729,22 @@ export default function SnakeGame() {
     if (powerupIdx !== -1) {
         const p = powerupsRef.current[powerupIdx];
         if (p.type === 'bonus') {
-            setScore(s => s + 50);
-            if(!autoPlayRef.current) addLog("Bónus! +50 pontos", "success");
+            scoreRef.current += 50;
+            setScore(scoreRef.current);
+            if (autoPlayRef.current) setAiBestScore(b => Math.max(b, scoreRef.current));
+            else setUserBestScore(b => Math.max(b, scoreRef.current));
+            
+            if(autoPlayRef.current) addGameplayLog("Bônus apanhado! +50 pts", "success");
         } else if (p.type === 'shrink') {
             const amountToRemove = Math.floor(nextSnake.length / 2);
             for(let i=0; i < amountToRemove; i++) {
                 if (nextSnake.length > 2) nextSnake.pop();
             }
-            if(!autoPlayRef.current) addLog("Encolheu pela metade!", "success");
+            if(autoPlayRef.current) addGameplayLog("Encolhimento ativado!", "success");
         } else if (p.type === 'intangivel') {
             powerupStateRef.current = 'intangivel';
             powerupTimerRef.current = 50; 
-            if(!autoPlayRef.current) addLog("Intangível! Atravesse tudo.", "success");
+            if(autoPlayRef.current) addGameplayLog("Modo Fantasma Ativo!", "success");
         }
         powerupsRef.current.splice(powerupIdx, 1);
         setPowerups([...powerupsRef.current]);
@@ -690,9 +752,19 @@ export default function SnakeGame() {
 
     if (ateFood) {
       growthRef.current += 1;
+      staminaRef.current = MAX_STAMINA;
+      setStamina(MAX_STAMINA);
+
+      // ATUALIZAÇÃO DA PONTUAÇÃO (Ref e State)
       const points = difficulty.score;
-      setScore((s) => s + points);
-      setBestScore((b) => Math.max(b, score + points));
+      scoreRef.current += points;
+      setScore(scoreRef.current);
+
+      if (autoPlayRef.current) {
+        setAiBestScore(b => Math.max(b, scoreRef.current));
+      } else {
+        setUserBestScore(b => Math.max(b, scoreRef.current));
+      }
 
       const maxCapacity = (boardSize * boardSize) - obstaclesRef.current.length;
       if (currentSnake.length + 1 >= maxCapacity) {
@@ -709,8 +781,9 @@ export default function SnakeGame() {
       const newSpawnId = foodSpawnId + 1;
       setFoodSpawnId(newSpawnId);
       
-      if (newSpawnId % 4 === 0) spawnObstacle();
-      if (newSpawnId % 5 === 0) spawnPowerup();
+      if (newSpawnId % 4 === 0 && enableObstaclesRef.current) spawnObstacle();
+      // O TEMPO ENTRE OS POWERUPS AUMENTOU DE 5 PARA 7 (Deixando mais raros)
+      if (newSpawnId % 7 === 0 && enablePowerupsRef.current) spawnPowerup();
 
       setEatUntilMs(Date.now() + Math.max(260, difficulty.speed * 2.1));
       setEatEffect({ x: nextHead.x, y: nextHead.y, id: Date.now() });
@@ -728,13 +801,14 @@ export default function SnakeGame() {
       id: getNextSegmentId(), x: segment.x, y: segment.y,
     }));
     
-    // Geração Inicial com 3 obstáculos imediatos para o mapa nascer desafiante
     obstaclesRef.current = [];
     setObstacles([]);
     const startingFood = createFood(nextBoardSize, startingSnake, [], []);
     foodRef.current = startingFood;
     
-    for(let i=0; i<3; i++) spawnObstacle();
+    if (enableObstaclesRef.current) {
+        for(let i=0; i<3; i++) spawnObstacle();
+    }
 
     setSnake(startingSnake);
     snakeRef.current = [...startingSnake];
@@ -746,7 +820,10 @@ export default function SnakeGame() {
     
     setCrashType('none');
     setStatus('ready');
+    
     setScore(0);
+    scoreRef.current = 0; // Zera a referência síncrona
+    
     setLastMove(INITIAL_DIRECTION);
     lastMoveRef.current = INITIAL_DIRECTION;
     growthRef.current = 0;
@@ -761,6 +838,9 @@ export default function SnakeGame() {
     powerupStateRef.current = null;
     powerupTimerRef.current = 0;
     lastThoughtRef.current = '';
+
+    staminaRef.current = MAX_STAMINA;
+    setStamina(MAX_STAMINA);
   }
 
   function startGame() {
@@ -809,7 +889,7 @@ export default function SnakeGame() {
     '--accent': theme.accent, '--accent-strong': theme.accentStrong,
     '--board-bg': theme.board, '--grid-size': `${100 / boardSize}%`,
     '--glow-x': `${glowPosition.x}%`, '--glow-y': `${glowPosition.y}%`,
-    width: '100%' // Removemos os 100vw que causavam o scroll horizontal
+    width: '100%' 
   };
 
   const isIntangibleRender = powerupStateRef.current === 'intangivel' && powerupTimerRef.current > 0;
@@ -834,8 +914,14 @@ export default function SnakeGame() {
 
             <motion.div layout className="hud-row" style={{ alignItems: 'center' }}>
               <div className="hud-card" style={{ minWidth: 90 }}>
-                <span>{autoPlay ? 'Geração' : 'Pontuação'}</span>
+                <span>{autoPlay ? 'Geração' : 'Pontuação Atual'}</span>
                 <strong>{autoPlay ? `#${generation}` : score}</strong>
+              </div>
+              <div className="hud-card" style={{ minWidth: 90 }}>
+                <span>Fôlego</span>
+                <strong style={{ color: stamina < 40 ? '#ff6b8a' : theme.accent }}>
+                    {Math.floor((stamina / MAX_STAMINA) * 100)}%
+                </strong>
               </div>
               <div className="hud-card" style={{ minWidth: 90 }}>
                 <span>Status</span>
@@ -856,12 +942,13 @@ export default function SnakeGame() {
                       setGeneration(1);
                       setAiWeights(defaultDumbWeights);
                       aiWeightsRef.current = defaultDumbWeights;
-                      setTerminalLogs([]);
-                      addLog("Treino de IA Iniciado. IA base carregada.", "system");
+                      setEvolutionLogs([]);
+                      setGameplayLogs([]);
+                      addEvolutionLog("Treino de IA Iniciado. IA base carregada.", "system");
                     }
                   }}
                 >
-                  {autoPlay ? '🧪 Parar Treino' : '🧠 Iniciar Treino IA'}
+                  {autoPlay ? '🧪 Assumir Controle (Player)' : '🧠 Iniciar Treino IA'}
                 </button>
 
                 {autoPlay && (
@@ -872,8 +959,9 @@ export default function SnakeGame() {
                       setGeneration(1);
                       setAiWeights(defaultDumbWeights);
                       aiWeightsRef.current = defaultDumbWeights;
-                      setTerminalLogs([]);
-                      addLog("Memória apagada. A IA voltou a ser burrinha!", "error");
+                      setEvolutionLogs([]);
+                      setGameplayLogs([]);
+                      addEvolutionLog("Memória apagada.", "error");
                       resetGame(boardSize);
                       startGame();
                     }}
@@ -891,11 +979,12 @@ export default function SnakeGame() {
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
-                  style={{ display: 'flex', gap: '10px', padding: '10px 20px', background: 'rgba(0,0,0,0.4)', borderBottom: `1px solid ${theme.accent}40`, fontSize: '0.85rem', color: '#aaa', justifyContent: 'center' }}
+                  style={{ display: 'flex', gap: '10px', padding: '10px 20px', background: 'rgba(0,0,0,0.4)', borderBottom: `1px solid ${theme.accent}40`, fontSize: '0.85rem', color: '#aaa', justifyContent: 'center', flexWrap: 'wrap' }}
                 >
                   <span>🍔 Atração: <strong style={{ color: '#fff' }}>{aiWeights.foodAttraction.toFixed(1)}</strong></span> |
                   <span>🌌 Espaço: <strong style={{ color: '#fff' }}>{aiWeights.spacePriority.toFixed(1)}</strong></span> |
-                  <span>🧱 Medo Parede: <strong style={{ color: '#fff' }}>{aiWeights.edgeAvoidance.toFixed(1)}</strong></span>
+                  <span>🧱 Medo Parede: <strong style={{ color: '#fff' }}>{aiWeights.edgeAvoidance.toFixed(1)}</strong></span> |
+                  <span>⚡ Pânico Fôlego: <strong style={{ color: '#fff' }}>{aiWeights.staminaPriority ? aiWeights.staminaPriority.toFixed(1) : '1.0'}</strong></span>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -932,7 +1021,6 @@ export default function SnakeGame() {
                   );
                 })}
                 
-                {/* OBSTÁCULOS MAIS VISÍVEIS E METÁLICOS */}
                 {obstacles.map((obs) => {
                   const size = 100 / boardSize;
                   return (
@@ -1023,7 +1111,7 @@ export default function SnakeGame() {
                               : 'Pronto para começar'}
                       </h3>
                       <p>
-                        {status === 'gameover' ? 'Aperte Enter para reiniciar manualmente.' : 'Inicie o treino da IA no botão acima, ou jogue manualmente.'}
+                        {status === 'gameover' ? 'Aperte Enter para reiniciar.' : 'Inicie o treino da IA no botão acima, ou jogue manualmente.'}
                       </p>
                       <div className="control-row" style={{ justifyContent: 'center' }}>
                         <button className="action-button" type="button" onClick={startGame}>
@@ -1039,37 +1127,59 @@ export default function SnakeGame() {
 
           <motion.aside layout className="panel sidebar">
 
+            {/* SEÇÃO DA TABELA DE COMPETIÇÃO */}
+            <motion.section layout className="sidebar-section">
+              <h2>Placar Humano vs IA</h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.05)', padding: '10px 14px', borderRadius: '6px', borderLeft: `4px solid ${theme.accent}` }}>
+                  <span style={{ fontWeight: 600 }}>👤 Melhor do Jogador</span>
+                  <strong style={{ color: theme.accent, fontSize: '1.1rem' }}>{userBestScore}</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.05)', padding: '10px 14px', borderRadius: '6px', borderLeft: '4px solid #ff6b8a' }}>
+                  <span style={{ fontWeight: 600 }}>🤖 Melhor da IA (Gemini)</span>
+                  <strong style={{ color: '#ff6b8a', fontSize: '1.1rem' }}>{aiBestScore}</strong>
+                </div>
+              </div>
+            </motion.section>
+
             {autoPlay && (
               <motion.section layout className="sidebar-section">
-                <h2>Terminal IA</h2>
-                <div style={{
-                  background: 'rgba(0,0,0,0.6)',
-                  borderRadius: 8,
-                  padding: 10,
-                  height: 220,
-                  overflowY: 'auto',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 6,
-                  fontFamily: 'monospace',
-                  fontSize: '0.75rem',
-                  border: `1px solid ${theme.accent}40`,
-                  boxShadow: 'inset 0 0 10px rgba(0,0,0,0.8)'
-                }}>
-                  {terminalLogs.map(log => {
+                <h2>Evolução e Sistema</h2>
+                <div 
+                  ref={evolutionTerminalRef}
+                  style={{
+                    background: 'rgba(0,0,0,0.6)', borderRadius: 8, padding: 10, height: 110, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, fontFamily: 'monospace', fontSize: '0.75rem', border: `1px solid ${theme.accent}40`, boxShadow: 'inset 0 0 10px rgba(0,0,0,0.8)', marginBottom: '15px'
+                  }}
+                >
+                  {evolutionLogs.map(log => {
                     let color = '#fff';
                     if (log.type === 'error') color = '#ff6b8a';
                     if (log.type === 'success') color = '#6cf7d6';
                     if (log.type === 'gemini-thought') color = '#f7e06c'; 
-                    if (log.type === 'thought') color = '#a1a1aa'; 
-
                     return (
                       <div key={log.id} style={{ color }}>
                         <span style={{ opacity: 0.4 }}>[{log.time}]</span> {log.msg}
                       </div>
                     );
                   })}
-                  <div ref={terminalEndRef} />
+                </div>
+
+                <h2>Pensamentos (Tempo Real)</h2>
+                <div 
+                  ref={gameplayTerminalRef}
+                  style={{
+                    background: 'rgba(0,0,0,0.6)', borderRadius: 8, padding: 10, height: 110, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, fontFamily: 'monospace', fontSize: '0.75rem', border: `1px solid ${theme.accent}40`, boxShadow: 'inset 0 0 10px rgba(0,0,0,0.8)'
+                  }}
+                >
+                  {gameplayLogs.map(log => {
+                    let color = '#a1a1aa';
+                    if (log.type === 'success') color = '#6cf7d6'; 
+                    return (
+                      <div key={log.id} style={{ color }}>
+                        <span style={{ opacity: 0.4 }}>[{log.time}]</span> {log.msg}
+                      </div>
+                    );
+                  })}
                 </div>
               </motion.section>
             )}
@@ -1077,25 +1187,61 @@ export default function SnakeGame() {
             <motion.section layout className="sidebar-section">
               <h2>Controles</h2>
               <div className="control-row">
-                <button className="action-button" type="button" onClick={startGame}>
-                  Start
-                </button>
-                <button className="chip-button" type="button" onClick={toggleFullscreen}>
-                  {isFullscreen ? 'Sair Fullscreen' : 'Tela cheia'}
-                </button>
-                <button className="chip-button" type="button" onClick={togglePause}>
-                  Pausar
-                </button>
-                <button className="chip-button" type="button" onClick={() => resetGame(boardSize)}>
-                  Reiniciar
-                </button>
+                <button className="action-button" type="button" onClick={startGame}>Start</button>
+                <button className="chip-button" type="button" onClick={toggleFullscreen}>{isFullscreen ? 'Sair Fullscreen' : 'Tela cheia'}</button>
+                <button className="chip-button" type="button" onClick={togglePause}>Pausar</button>
+                <button className="chip-button" type="button" onClick={() => resetGame(boardSize)}>Reiniciar</button>
               </div>
-              <p className="helper-text" style={{ marginTop: 14 }}>
-                Use setas, WASD ou os botões de toque para mover a cobrinha. Enter inicia ou reinicia depois de uma derrota.
-              </p>
+            </motion.section>
+
+            <motion.section layout className="sidebar-section">
+              <h2>Modificadores</h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: status !== 'ready' ? 'not-allowed' : 'pointer', opacity: status !== 'ready' ? 0.5 : 1 }}>
+                  <input type="checkbox" checked={enablePowerups} onChange={(e) => setEnablePowerups(e.target.checked)} disabled={status !== 'ready'} style={{ accentColor: theme.accent }} />
+                  <span style={{ fontSize: '0.9rem', color: '#ccc' }}>Ativar Power-Ups</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: status !== 'ready' ? 'not-allowed' : 'pointer', opacity: status !== 'ready' ? 0.5 : 1 }}>
+                  <input type="checkbox" checked={enableObstacles} onChange={(e) => setEnableObstacles(e.target.checked)} disabled={status !== 'ready'} style={{ accentColor: theme.accent }} />
+                  <span style={{ fontSize: '0.9rem', color: '#ccc' }}>Ativar Paredes Dinâmicas</span>
+                </label>
+              </div>
+            </motion.section>
+
+            <motion.section layout className="sidebar-section">
+              <h2>Dificuldade</h2>
+              <div className="difficulty-grid">
+                {DIFFICULTIES.map((item) => (
+                  <button
+                    key={item.id} className="difficulty-option" type="button" data-active={item.id === difficultyId} onClick={() => handleDifficultyChange(item.id)}
+                  >
+                    <span>
+                      <strong>{item.label}</strong>
+                      <span className="helper-text" style={{ display: 'block', marginTop: 4 }}>{item.note}</span>
+                    </span>
+                    <span className="kbd">{item.size}x{item.size}</span>
+                  </button>
+                ))}
+              </div>
+            </motion.section>
+
+            <motion.section layout className="sidebar-section">
+              <h2>Estilo</h2>
+              <div className="theme-grid">
+                {THEMES.map((item) => (
+                  <button
+                    key={item.id} className="theme-option" type="button" data-active={item.id === themeId} onClick={() => handleThemeChange(item.id)}
+                  >
+                    <span>
+                      <strong>{item.label}</strong>
+                      <span className="helper-text" style={{ display: 'block', marginTop: 4 }}>{item.description}</span>
+                    </span>
+                    <span className="swatch" style={{ background: `linear-gradient(135deg, ${item.accent}, ${item.accentStrong})` }} />
+                  </button>
+                ))}
+              </div>
             </motion.section>
             
-            {/* Controlos Touch Instantâneos com onPointerDown */}
             <motion.section layout className="sidebar-section mobile-only-controls">
               <h2>Toque Rápido</h2>
               <div className="touch-controls" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
@@ -1116,51 +1262,6 @@ export default function SnakeGame() {
               </div>
             </motion.section>
 
-            <motion.section layout className="sidebar-section">
-              <h2>Dificuldade</h2>
-              <div className="difficulty-grid">
-                {DIFFICULTIES.map((item) => (
-                  <button
-                    key={item.id}
-                    className="difficulty-option"
-                    type="button"
-                    data-active={item.id === difficultyId}
-                    onClick={() => handleDifficultyChange(item.id)}
-                  >
-                    <span>
-                      <strong>{item.label}</strong>
-                      <span className="helper-text" style={{ display: 'block', marginTop: 4 }}>
-                        {item.note}
-                      </span>
-                    </span>
-                    <span className="kbd">{item.size}x{item.size}</span>
-                  </button>
-                ))}
-              </div>
-            </motion.section>
-
-            <motion.section layout className="sidebar-section">
-              <h2>Estilo</h2>
-              <div className="theme-grid">
-                {THEMES.map((item) => (
-                  <button
-                    key={item.id}
-                    className="theme-option"
-                    type="button"
-                    data-active={item.id === themeId}
-                    onClick={() => handleThemeChange(item.id)}
-                  >
-                    <span>
-                      <strong>{item.label}</strong>
-                      <span className="helper-text" style={{ display: 'block', marginTop: 4 }}>
-                        {item.description}
-                      </span>
-                    </span>
-                    <span className="swatch" style={{ background: `linear-gradient(135deg, ${item.accent}, ${item.accentStrong})` }} />
-                  </button>
-                ))}
-              </div>
-            </motion.section>
           </motion.aside>
         </motion.div>
       </motion.section>
